@@ -1,5 +1,5 @@
 import { ICommunicationAdapter } from '../adapters/ICommunicationAdapter';
-import { MockAdapter } from '../adapters/MockAdapter';
+import { KrakenHttpAdapter } from '../adapters/KrakenHttpAdapter';
 import { DeviceCommand, MachineState } from '../models';
 
 export class DeviceService {
@@ -26,5 +26,4 @@ export class DeviceService {
   }
 }
 
-// Singleton instance using MockAdapter for development
-export const deviceService = new DeviceService(new MockAdapter());
+export const deviceService = new DeviceService(new KrakenHttpAdapter());
