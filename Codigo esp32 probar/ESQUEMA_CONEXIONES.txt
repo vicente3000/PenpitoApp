@@ -1,0 +1,176 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║                ESQUEMA COMPLETO DE CONEXIONES                      ║
+║                   COCTELERA INTELIGENTE                            ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    ALIMENTACION                                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+FUENTE 12V (lab)          FUENTE 5V (lab)          PC USB
+   │                           │                      │
+   ├── (+) ──┬── L298N #1 12V  ├── (+) ── Proto 5V ──┤
+   │         ├── L298N #2 12V  │         │            ESP32 USB
+   │         ├── L298N #3 12V  │         └── Servos Rojo (VCC)
+   │         ├── L298N #4 12V  │
+   │         └── A4988 VMOT    │
+   │                           │
+   └── (-) ──┬── L298N #1 GND  └── (-) ── Proto GND
+             ├── L298N #2 GND             │
+             ├── L298N #3 GND             ├── ESP32 GND
+             ├── L298N #4 GND             ├── Servos GND (Cafe)
+             ├── A4988 GND                ├── A4988 GND
+             ├── A4988 ENABLE             ├── 10kΩ ── GPIO 34
+             └── Proto GND ───────────────┘
+
+NOTA: 12V y 5V comparten el mismo GND (todos conectados entre sí)
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║               MODULO ESP32 DEVKIT V1 (CP2102)                      ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+                             ┌─────────────────┐
+    GND ───────── GND ───────┤ EN              ├── 3.3V
+   GPIO 23 ─── S3003 #1      │                 │── RESET
+   GPIO 22 ─── S3003 #2      │  ESP32          │── GPIO 0
+   GPIO 27 ─── S3003 #3      │  DEVKIT V1      │── GPIO 1 (TX)
+   GPIO 14 ─── Servo Cont    │                 │── GPIO 3 (RX)
+   GPIO 12 ─── L298N #1 ENA  │                 │── GPIO 21 ─── L298N #2 IN1
+   GPIO 13 ─── L298N #1 ENB  │                 │── GPIO 19 ─── L298N #2 ENA
+   GPIO 25 ─── L298N #2 ENB  │                 │── GPIO 18 ─── L298N #4 IN1
+   GPIO 26 ─── L298N #3 ENA  │                 │── GPIO 17 ─── L298N #3 IN3
+   GPIO 32 ─── L298N #3 ENB  │                 │── GPIO 16 ─── L298N #3 IN1
+   GPIO 33 ─── L298N #4 ENA  │                 │── GPIO 15 ─── L298N #2 IN3
+   GPIO 5  ─── A4988 STEP    │                 │── GPIO 4  ─── L298N #1 IN3
+   GPIO 2  ─── L298N #1 IN1  │                 │── GPIO 34 ─── Limit Switch
+                             │                 │── VIN  ──── (USB o fuente 5V)
+   3.3V ───── A4988 DIR      └─────────────────┘
+   GND ─────── A4988 ENABLE
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                 DRIVER A4988 + NEMA17                               ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+                           A4988
+                      ┌──────────────┐
+   ESP 3.3V ───── DIR │              │  VMOT ──── Fuente 12V (+)
+   ESP GPIO 5 ── STEP │              │  GND ───── Fuente 12V (-)
+   ESP GND ──── ENABLE│              │
+                      │              │  1B ──┐
+                      │              │  1A ──┤── NEMA17
+                      │              │  2A ──┤
+                      │              │  2B ──┘
+                      └──────────────┘
+    MS1 MS2 MS3 ──── GND (full step, opcional cambiar microstepping)
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                  LIMIT SWITCH (FINAL DE CARRERA)                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+                       ┌──────────┐
+        GPIO 34 ───────┤  SWITCH  ├── 3.3V (ESP32)
+                       └────┬─────┘
+                            │
+                          10kΩ
+                            │
+                           GND
+
+  NOTA: Switch normalmente abierto (NO).
+  Cuando el carro toca el switch: GPIO 34 → HIGH (3.3V)
+  Resistencia 10kΩ asegura LOW cuando no está presionado.
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║              MODULOS L298N (4x) + BOMBAS R385 (7x)                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+.──────────────.    .──────────────.    .──────────────.    .──────────────.
+│  L298N #1    │    │  L298N #2    │    │  L298N #3    │    │  L298N #4    │
+│              │    │              │    │              │    │              │
+│ 12V ── 12V F │    │ 12V ── 12V F │    │ 12V ── 12V F │    │ 12V ── 12V F │
+│ GND ── GND C │    │ GND ── GND   │    │ GND ── GND   │    │ GND ── GND   │
+│ 5V ── jumper │    │ 5V ── jumper │    │ 5V ── jumper │    │ 5V ── jumper │
+│  (puesto)    │    │  (puesto)    │    │  (puesto)    │    │  (puesto)    │
+│              │    │              │    │              │    │              │
+│ ENA=GPIO 12  │    │ ENA=GPIO 19  │    │ ENA=GPIO 26  │    │ ENA=GPIO 33  │
+│ IN1=GPIO 2   │    │ IN1=GPIO 21  │    │ IN1=GPIO 16  │    │ IN1=GPIO 18  │
+│ IN2=─── GND  │    │ IN2=─── GND  │    │ IN2=─── GND  │    │ IN2=─── GND  │
+│ OUT1/2─ BOM1 │    │ OUT1/2─ BOM3 │    │ OUT1/2─ BOM5 │    │ OUT1/2─ BOM7 │
+│              │    │              │    │              │    │              │
+│ ENB=GPIO 13  │    │ ENB=GPIO 25  │    │ ENB=GPIO 32  │    │ ENB=─── libre│
+│ IN3=GPIO 4   │    │ IN3=GPIO 15  │    │ IN3=GPIO 17  │    │ IN3=─── libre│
+│ IN4=─── GND  │    │ IN4=─── GND  │    │ IN4=─── GND  │    │ IN4=─── libre│
+│ OUT3/4─ BOM2 │    │ OUT3/4─ BOM4 │    │ OUT3/4─ BOM6 │    │ OUT3/4─ libre│
+│              │    │              │    │              │    │              │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+
+  LEYENDA:
+  F = Conexiones en cadena desde Fuente 12V (+)
+  C = Conexiones en cadena GND común
+
+  IN2 e IN4 de L298N siempre a GND
+  L298N #4 canal B no se usa (solo 7 bombas)
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                SERVOS (4 total: 3 S3003 + 1 continuo)              ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+   SERVO              PIN ESP32          ALIMENTACION
+   ─────              ─────────          ────────────
+   S3003 #1           GPIO 22             Rojo → Proto 5V (+)
+   S3003 #2           GPIO 23             Rojo → Proto 5V (+)
+   S3003 #3           GPIO 27             Rojo → Proto 5V (+)
+   Servo Continuo     GPIO 14             Rojo → Proto 5V (+)
+   
+   Todos: Cafe (GND) → Proto GND
+   Todos: Amarillo (señal) → GPIO respectivo
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║              LISTA DE MATERIALES                                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+  1x ESP32 DevKit V1 (CP2102)
+  4x L298N modulo puente H
+  7x Bomba R385
+  3x Servo S3003 (posicional)
+  1x Servo de rotacion continua
+  1x NEMA17 (motor paso a paso)
+  1x A4988 driver
+  1x Limit switch (final de carrera)
+  1x Fuente laboratorio 12V (>=5A)
+  1x Fuente laboratorio 5V (>=3A)
+  1x Resistencia 10k ohm (para limit switch)
+  1x Protoboard (para 5V de servos)
+  Cables jumper varios
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║              CODIGO: COMANDOS DEL SISTEMA                          ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+  BOMBAS:
+    bc<n>       calibrar 10s, ej: bc1
+    bl<n> <ml>  guardar cal, ej: bl1 42
+    b<n>        dispensar 30ml, ej: b1
+    bp<n> <s>   prime, ej: bp1 8
+    bt          test todas 1s
+
+  SERVOS:
+    s<n> <ang>  servo posicional, ej: s1 90
+    sc <ang>    servo continuo (0-180), 90=stop
+
+  MOTOR NEMA17:
+    mr <steps>  girar N pasos
+    mh          home (busca limit switch)
+    ms          stop emergencia
+    mp <pos>    ir a posicion absoluta
+
+  GENERAL:
+    0           apagar todo
+    ?           ayuda
