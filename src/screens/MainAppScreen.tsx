@@ -39,6 +39,7 @@ import { useOrderStore } from '../stores/OrderStore';
 import { useRecipeStore } from '../stores/RecipeStore';
 import { useSessionStore } from '../stores/SessionStore';
 import { useSettingsStore } from '../stores/SettingsStore';
+import { deviceService } from '../services/DeviceService';
 import { formatMl, getDefaultIceCount, piscolaProfiles } from '../utils/drinkConfig';
 import { getOrderStatusLabel } from '../utils/preparation';
 import {
@@ -53,10 +54,45 @@ type CartItem = {
   quantity: number;
 };
 
+type Esp32DeviceKey = 'pumps' | 'motor';
+
+type Esp32WifiConfig = {
+  ssid: string;
+  password: string;
+  mqttHost: string;
+  mqttPort: string;
+};
+
 type SplitOption = {
   id: BillSplitMethod;
   title: string;
   description: string;
+};
+
+const esp32Devices: { id: Esp32DeviceKey; title: string }[] = [
+  { id: 'pumps', title: 'ESP32 bombas' },
+  { id: 'motor', title: 'ESP32 motor' },
+];
+
+const defaultEsp32WifiConfig: Record<Esp32DeviceKey, Esp32WifiConfig> = {
+  pumps: {
+    ssid: '',
+    password: '',
+    mqttHost: '192.168.1.100',
+    mqttPort: '1883',
+  },
+  motor: {
+    ssid: '',
+    password: '',
+    mqttHost: '192.168.1.100',
+    mqttPort: '1883',
+  },
+};
+
+const adminTestMode = process.env.EXPO_PUBLIC_ADMIN_TEST_MODE === 'true';
+const adminTestEntry: AppEntryQr = {
+  type: 'admin',
+  qr_value: 'admin-test',
 };
 
 const splitOptions: SplitOption[] = [
@@ -204,14 +240,14 @@ export function MainAppScreen() {
     clearTableSession,
   } = useSessionStore();
 
-  const [activeEntry, setActiveEntry] = useState<AppEntryQr | null>(null);
+  const [activeEntry, setActiveEntry] = useState<AppEntryQr | null>(adminTestMode ? adminTestEntry : null);
   const [guestNameInput, setGuestNameInput] = useState('');
   const [currentGuestId, setCurrentGuestId] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
   const [piscolaIntensity, setPiscolaIntensity] = useState<PiscolaIntensity>('normal');
   const [adminPassword, setAdminPassword] = useState('');
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [adminUnlocked, setAdminUnlocked] = useState(adminTestMode);
   const [adminError, setAdminError] = useState('');
   const [bottleCapacityMl, setBottleCapacityMl] = useState('');
   const [dispenseSpeedMlS, setDispenseSpeedMlS] = useState('');
@@ -224,6 +260,9 @@ export function MainAppScreen() {
   const [whiskyPrice, setWhiskyPrice] = useState('');
   const [negroniPrice, setNegroniPrice] = useState('');
   const [ginTonicPrice, setGinTonicPrice] = useState('');
+  const [esp32WifiConfig, setEsp32WifiConfig] =
+    useState<Record<Esp32DeviceKey, Esp32WifiConfig>>(defaultEsp32WifiConfig);
+  const [esp32Feedback, setEsp32Feedback] = useState('');
 
   useEffect(() => {
     if (!settings) {
@@ -335,12 +374,20 @@ export function MainAppScreen() {
 
   const handleEntryResolved = (entry: AppEntryQr) => {
     setActiveEntry(entry);
-    setAdminUnlocked(false);
+    setAdminUnlocked(adminTestMode && entry.type === 'admin');
     setAdminPassword('');
     setAdminError('');
   };
 
   const resetAccessToScanner = () => {
+    if (adminTestMode) {
+      setActiveEntry(adminTestEntry);
+      setAdminUnlocked(true);
+      setAdminPassword('');
+      setAdminError('');
+      return;
+    }
+
     setActiveEntry(null);
     setAdminUnlocked(false);
     setAdminPassword('');
@@ -591,6 +638,46 @@ export function MainAppScreen() {
     setSettingsFeedback('Parametros guardados.');
   };
 
+  const setEsp32ConfigValue = (deviceId: Esp32DeviceKey, field: keyof Esp32WifiConfig, value: string) => {
+    setEsp32WifiConfig((current) => ({
+      ...current,
+      [deviceId]: {
+        ...current[deviceId],
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleSendEsp32Config = async (deviceId: Esp32DeviceKey) => {
+    const config = esp32WifiConfig[deviceId];
+    const ssid = config.ssid.trim();
+    const mqttHost = config.mqttHost.trim();
+    const mqttPort = Number(config.mqttPort);
+    const deviceLabel = esp32Devices.find((device) => device.id === deviceId)?.title ?? 'ESP32';
+
+    if (!ssid || !mqttHost || !Number.isFinite(mqttPort) || mqttPort <= 0) {
+      setEsp32Feedback('Completa SSID, broker MQTT y puerto.');
+      return;
+    }
+
+    setEsp32Feedback(`Enviando configuracion a ${deviceLabel}...`);
+    const success = await deviceService.sendCommand({
+      cmd: 'CONFIG_WIFI',
+      val: deviceId,
+      target: deviceId,
+      ssid,
+      password: config.password,
+      mqttHost,
+      mqttPort,
+    });
+
+    setEsp32Feedback(
+      success
+        ? `Configuracion enviada a ${deviceLabel}.`
+        : `No se pudo enviar la configuracion a ${deviceLabel}.`
+    );
+  };
+
   if (isBootLoading) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -712,6 +799,12 @@ export function MainAppScreen() {
             whiskyPrice={whiskyPrice}
             negroniPrice={negroniPrice}
             ginTonicPrice={ginTonicPrice}
+            esp32WifiConfig={esp32WifiConfig}
+            esp32Feedback={esp32Feedback}
+            setEsp32ConfigValue={setEsp32ConfigValue}
+            onSendEsp32Config={(deviceId) => {
+              void handleSendEsp32Config(deviceId);
+            }}
           />
         )}
       </SafeAreaView>
@@ -1669,6 +1762,10 @@ type AdminScreenProps = {
   whiskyPrice: string;
   negroniPrice: string;
   ginTonicPrice: string;
+  esp32WifiConfig: Record<Esp32DeviceKey, Esp32WifiConfig>;
+  esp32Feedback: string;
+  setEsp32ConfigValue: (deviceId: Esp32DeviceKey, field: keyof Esp32WifiConfig, value: string) => void;
+  onSendEsp32Config: (deviceId: Esp32DeviceKey) => void;
 };
 
 function AdminScreen({
@@ -1705,6 +1802,10 @@ function AdminScreen({
   whiskyPrice,
   negroniPrice,
   ginTonicPrice,
+  esp32WifiConfig,
+  esp32Feedback,
+  setEsp32ConfigValue,
+  onSendEsp32Config,
 }: AdminScreenProps) {
   const recipeStats = useMemo(() => {
     const grouped = new Map<string, { name: string; count: number }>();
@@ -1730,6 +1831,60 @@ function AdminScreen({
         <Text style={styles.sectionText}>Conexion ESP32: {isConnected ? 'Activa' : 'Sin conexion'}</Text>
         <Text style={styles.sectionText}>Operacion: {machineState.status}</Text>
         <Text style={styles.sectionText}>La maquina queda disponible automaticamente al conectarse.</Text>
+      </View>
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>Conexion ESP32</Text>
+        {esp32Feedback ? <Text style={styles.helperText}>{esp32Feedback}</Text> : null}
+        {esp32Devices.map((device) => {
+          const config = esp32WifiConfig[device.id];
+
+          return (
+            <View key={device.id} style={styles.deviceConfigBlock}>
+              <Text style={styles.orderTitle}>{device.title}</Text>
+
+              <Text style={styles.inputLabel}>Red WiFi</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={styles.input}
+                value={config.ssid}
+                onChangeText={(value) => setEsp32ConfigValue(device.id, 'ssid', value)}
+              />
+
+              <Text style={styles.inputLabel}>Clave WiFi</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                style={styles.input}
+                value={config.password}
+                onChangeText={(value) => setEsp32ConfigValue(device.id, 'password', value)}
+              />
+
+              <Text style={styles.inputLabel}>Broker MQTT</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={styles.input}
+                value={config.mqttHost}
+                onChangeText={(value) => setEsp32ConfigValue(device.id, 'mqttHost', value)}
+              />
+
+              <Text style={styles.inputLabel}>Puerto MQTT</Text>
+              <TextInput
+                keyboardType="numeric"
+                style={styles.input}
+                value={config.mqttPort}
+                onChangeText={(value) => setEsp32ConfigValue(device.id, 'mqttPort', value)}
+              />
+
+              <TouchableOpacity style={styles.secondaryActionButton} onPress={() => onSendEsp32Config(device.id)}>
+                <Text style={styles.secondaryActionButtonText}>Enviar configuracion</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })}
       </View>
 
       <View style={styles.metricsRow}>
@@ -2566,6 +2721,12 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
     borderWidth: 1,
     borderColor: Colors.border,
+  },
+  deviceConfigBlock: {
+    marginTop: 12,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
   },
   inventoryHeader: {
     flexDirection: 'row',

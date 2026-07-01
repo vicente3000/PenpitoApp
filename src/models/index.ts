@@ -45,9 +45,14 @@ export interface MachineState {
 export interface DeviceCommand {
   cmd: string;
   val: string;
+  target?: 'pumps' | 'motor';
   iceCount?: number;
   alcoholOz?: number;
   mixerOz?: number;
+  ssid?: string;
+  password?: string;
+  mqttHost?: string;
+  mqttPort?: number;
 }
 
 export type PiscolaIntensity = 'suave' | 'normal' | 'fuerte';
