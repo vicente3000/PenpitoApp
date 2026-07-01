@@ -1,5 +1,5 @@
 import { ICommunicationAdapter } from '../adapters/ICommunicationAdapter';
-import { KrakenHttpAdapter } from '../adapters/KrakenHttpAdapter';
+import { KrakenMqttAdapter } from '../adapters/KrakenMqttAdapter';
 import { DeviceCommand, MachineState } from '../models';
 
 export class DeviceService {
@@ -26,4 +26,4 @@ export class DeviceService {
   }
 }
 
-export const deviceService = new DeviceService(new KrakenHttpAdapter());
+export const deviceService = new DeviceService(new KrakenMqttAdapter());
