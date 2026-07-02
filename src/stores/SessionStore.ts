@@ -17,6 +17,7 @@ interface SessionState {
   removeGuestFromTable: (tableNumber: number, guestId: string) => void;
   clearTableSession: (tableNumber: number) => void;
   changeGuestName: (tableNumber: number, guestId: string, newName: string) => void;
+  requestBill: (tableNumber: number, requested: boolean) => void;
   syncSessionFromNetwork: (tableNumber: number, nextSession: TableSession) => void;
   setDeviceGuestName: (name: string | null) => Promise<void>;
 }
@@ -182,6 +183,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         ...session,
         guests: session.guests.map((g) => (g.id === guestId ? { ...g, name: cleanName } : g)),
+      };
+    });
+    set({ sessions: nextSessions });
+    void persistSessions(nextSessions);
+    publishSessionUpdate(tableNumber, nextSessions);
+  },
+  requestBill: (tableNumber, requested) => {
+    const nextSessions = get().sessions.map((session) => {
+      if (session.table_number !== tableNumber) {
+        return session;
+      }
+      return {
+        ...session,
+        bill_requested: requested,
       };
     });
     set({ sessions: nextSessions });

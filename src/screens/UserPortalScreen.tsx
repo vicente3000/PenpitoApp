@@ -53,6 +53,7 @@ export interface UserPortalProps {
   onSubmitCart: () => void;
   onDeleteQueuedOrder: (order: DrinkOrder) => void;
   onChangeGuestName: (newName: string) => void;
+  onRequestBill: (requested: boolean) => void;
   recipeAvailability: (recipe: Recipe) => boolean;
   recipes: Recipe[];
   settings: MachineSettings | null;
@@ -83,6 +84,7 @@ export function UserPortalScreen({
   onSubmitCart,
   onDeleteQueuedOrder,
   onChangeGuestName,
+  onRequestBill,
   recipeAvailability,
   recipes,
   settings,
@@ -155,6 +157,7 @@ export function UserPortalScreen({
           text: 'Pedir Cuenta',
           variant: 'primary',
           onPress: () => {
+            onRequestBill(true);
             setTimeout(() => {
               showCustomDialog(
                 'Solicitud enviada',
@@ -474,12 +477,21 @@ export function UserPortalScreen({
                   <Text style={styles.summaryBreakdownTotalValue}>{formatCurrency(tableTotal)}</Text>
                 </View>
               </View>
-              <Button
-                title="Pedir la cuenta al garzón"
-                variant="primary"
-                onPress={handleAskForBill}
-                style={[styles.submitCartBtn, { marginTop: 14 }]}
-              />
+              {session?.bill_requested ? (
+                <View style={styles.billRequestedBanner}>
+                  <FontAwesome name="bell" size={16} color="#c46a4a" />
+                  <Text style={styles.billRequestedText}>
+                    Cuenta solicitada. El garzón está en camino.
+                  </Text>
+                </View>
+              ) : (
+                <Button
+                  title="Pedir la cuenta al garzón"
+                  variant="primary"
+                  onPress={handleAskForBill}
+                  style={[styles.submitCartBtn, { marginTop: 14 }]}
+                />
+              )}
             </Card>
           )}
         </>
@@ -818,5 +830,22 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontSize: 16,
     fontWeight: '900',
+  },
+  billRequestedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: '#fffaf4',
+    padding: 14,
+    borderRadius: 16,
+    marginTop: 14,
+    borderWidth: 1.2,
+    borderColor: '#c46a4a',
+  },
+  billRequestedText: {
+    color: '#c46a4a',
+    fontSize: 13,
+    fontWeight: '800',
   },
 }) as any;

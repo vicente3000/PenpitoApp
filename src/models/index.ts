@@ -122,6 +122,7 @@ export interface TableSession {
   split_method: BillSplitMethod;
   host_guest_id?: string;
   tip_percentage: number;
+  bill_requested?: boolean;
 }
 
 export type AppEntryQr =

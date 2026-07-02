@@ -124,6 +124,71 @@ export function WaiterScreen({
     );
   };
 
+  const handleCobrarMesa = (table: {
+    tableNumber: number;
+    orders: DrinkOrder[];
+    session: TableSession | null;
+  }) => {
+    const tableSubtotal = table.orders.reduce(
+      (total, order) => total + getRecipePriceLocal(order.recipe_id),
+      0
+    );
+    const tableTipAmount = Math.round(tableSubtotal * 0.10);
+    const tableTotal = tableSubtotal + tableTipAmount;
+
+    const guestBreakdown: Record<string, number> = {};
+    table.orders.forEach((order) => {
+      const gName = order.guest_name || 'Mesa';
+      const price = getRecipePriceLocal(order.recipe_id);
+      guestBreakdown[gName] = (guestBreakdown[gName] || 0) + price;
+    });
+
+    const numGuests = table.session?.guests.length || 1;
+    const equalSplit = Math.round(tableTotal / numGuests);
+
+    let message = `Subtotal Consumido: ${formatCurrency(tableSubtotal)}\n`;
+    message += `Propina Sugerida (10%): ${formatCurrency(tableTipAmount)}\n`;
+    message += `Total a Cobrar: ${formatCurrency(tableTotal)}\n\n`;
+    message += `══════ MÉTODOS DE PAGO ══════\n\n`;
+    message += `1. Cuenta Completa:\n`;
+    message += `   - Un pago único de ${formatCurrency(tableTotal)}\n\n`;
+
+    if (numGuests > 1) {
+      message += `2. Partes Iguales (${numGuests} personas):\n`;
+      message += `   - ${formatCurrency(equalSplit)} por persona\n\n`;
+    }
+
+    message += `3. Consumo Individual (Consumo + 10% propina):\n`;
+    Object.entries(guestBreakdown).forEach(([guest, amount]) => {
+      const guestTip = Math.round(amount * 0.10);
+      const guestTotal = amount + guestTip;
+      message += `   - ${guest}: ${formatCurrency(guestTotal)} (Consumo: ${formatCurrency(amount)})\n`;
+    });
+
+    showCustomDialog(
+      `Cobro de ${formatTableLabel(table.tableNumber)}`,
+      message,
+      [
+        { text: 'Volver', variant: 'outline' },
+        {
+          text: 'Registrar Pago y Cerrar Mesa',
+          variant: 'primary',
+          onPress: () => {
+            clearTableOrders(table.tableNumber);
+            clearTableSession(table.tableNumber);
+            setTimeout(() => {
+              showCustomDialog(
+                'Mesa cerrada',
+                `El pago de la ${formatTableLabel(table.tableNumber)} ha sido registrado. La mesa se liberó correctamente.`,
+                [{ text: 'Aceptar', variant: 'primary' }]
+              );
+            }, 500);
+          }
+        }
+      ]
+    );
+  };
+
   const sessionByTable = new Map(sessions.map((session) => [session.table_number, session]));
   const tableNumbers = new Set<number>([
     ...ordersByTable.keys(),
@@ -179,6 +244,21 @@ export function WaiterScreen({
 
           return (
             <Card key={table.tableNumber} style={styles.sectionCard as any}>
+              {table.session?.bill_requested && (
+                <View style={styles.billRequestedBanner}>
+                  <View style={styles.billRequestedLeft}>
+                    <FontAwesome name="bell" size={16} color="#c46a4a" />
+                    <Text style={styles.billRequestedText}>Solicita la Cuenta</Text>
+                  </View>
+                  <Button
+                    title="Cobrar Mesa"
+                    variant="primary"
+                    size="sm"
+                    onPress={() => handleCobrarMesa(table)}
+                    style={styles.cobrarBtn}
+                  />
+                </View>
+              )}
               <View style={styles.tableHeader}>
                 <Text style={styles.tableTitle as any}>{formatTableLabel(table.tableNumber)}</Text>
                 <Button
@@ -568,5 +648,31 @@ const styles = StyleSheet.create({
   },
   deleteBtnText: {
     color: Colors.error,
+  },
+  billRequestedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fffaf4',
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1.2,
+    borderColor: '#c46a4a',
+    marginBottom: 14,
+  },
+  billRequestedLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  billRequestedText: {
+    color: '#c46a4a',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  cobrarBtn: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 10,
   },
 });

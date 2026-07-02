@@ -222,6 +222,7 @@ export default function TableRoute() {
         onSubmitCart={handleSubmitCart}
         onDeleteQueuedOrder={(order) => deleteOrder(order.id)}
         onChangeGuestName={handleChangeGuestName}
+        onRequestBill={(requested) => useSessionStore.getState().requestBill(tableNumber, requested)}
         recipeAvailability={(recipe) =>
           recipeIsAvailable(recipe, getRecipeDefaultOptions(recipe, recipe.id === 'piscola' ? piscolaIntensity : 'normal'))
         }
