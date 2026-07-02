@@ -36,7 +36,7 @@ const unsigned long TIEMPO_SUBIR_CUCHARA =
 //  PINOUT (Unificado en 1x ESP32)
 // ═══════════════════════════════════════════
 // BOMBAS: 1 pin por bomba (ENA/ENB con jumper a 5V, IN2/IN4 a GND)
-const int B_PIN[] = {12, 13, 19, 25, 26, 32, 33};
+const int B_PIN[] = {16, 17, 19, 25, 26, 32, 33};
 const int NUM_BOMBAS = 7;
 
 // Calibraciones pregrabadas según tus medidas (ml por segundo)
@@ -57,13 +57,13 @@ unsigned long srv_cont_stop_time = 0; // Tiempo de parada de servo continuo
 Servo srv_pos[3];
 const int SRV_PIN[] = {22, 23, 27};
 Servo srv_cont;
-const int SRV_CONT_PIN = 14;
+const int SRV_CONT_PIN = 21;
 const int SRV_CONT_STOP = 90;
 const int SRV_CONT_TRIM = 0;
 
 // MOTOR NEMA17 + A4988
-const int MOTOR_STEP = 5;
-const int MOTOR_DIR = 18;
+const int MOTOR_STEP = 18;
+const int MOTOR_DIR = 12;
 const int MOTOR_ENABLE = 4; // LOW = Habilitado, HIGH = Apagado
 const int LIMIT_SW = 34;    // Pull-down externo de 10k
 volatile bool limit_triggered = false;
