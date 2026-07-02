@@ -1,11 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { BillSplitMethod, SessionGuest, TableSession } from '../models';
+import { deviceService } from '../services/DeviceService';
 
 const SESSION_STORAGE_KEY = 'penpito.table.sessions';
 
 interface SessionState {
   sessions: TableSession[];
+  deviceGuestName: string | null;
   loadSessions: () => Promise<void>;
   ensureTableSession: (tableNumber: number, qrValue: string) => TableSession;
   joinTable: (tableNumber: number, qrValue: string, guestName: string) => SessionGuest;
@@ -14,6 +16,8 @@ interface SessionState {
   setTipPercentage: (tableNumber: number, tipPercentage: number) => void;
   removeGuestFromTable: (tableNumber: number, guestId: string) => void;
   clearTableSession: (tableNumber: number) => void;
+  syncSessionFromNetwork: (tableNumber: number, nextSession: TableSession) => void;
+  setDeviceGuestName: (name: string | null) => Promise<void>;
 }
 
 function makeGuestId(tableNumber: number) {
@@ -39,23 +43,27 @@ async function persistSessions(sessions: TableSession[]) {
   }
 }
 
+function publishSessionUpdate(tableNumber: number, sessions: TableSession[]) {
+  const session = sessions.find((s) => s.table_number === tableNumber);
+  if (session) {
+    deviceService.publish(`penpito/table/${tableNumber}/session`, JSON.stringify(session));
+  }
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
+  deviceGuestName: null,
   loadSessions: async () => {
     try {
       const raw = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
-      if (!raw) {
-        return;
-      }
-
-      const parsed = JSON.parse(raw) as TableSession[];
-      if (!Array.isArray(parsed)) {
-        return;
-      }
-
-      set({ sessions: parsed });
+      const guestName = await AsyncStorage.getItem('penpito.device.guestName');
+      
+      const parsed = raw ? (JSON.parse(raw) as TableSession[]) : [];
+      const sessions = Array.isArray(parsed) ? parsed : [];
+      
+      set({ sessions, deviceGuestName: guestName });
     } catch {
-      // Invalid persisted data is ignored and a fresh session can be created.
+      // Invalid persisted data is ignored
     }
   },
   ensureTableSession: (tableNumber, qrValue) => {
@@ -70,6 +78,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sessions: [...state.sessions, nextSession],
     }));
     void persistSessions(nextSessions);
+    publishSessionUpdate(tableNumber, nextSessions);
     return nextSession;
   },
   joinTable: (tableNumber, qrValue, guestName) => {
@@ -97,6 +106,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     set({ sessions: nextSessions });
     void persistSessions(nextSessions);
+    publishSessionUpdate(tableNumber, nextSessions);
 
     return nextGuest;
   },
@@ -115,6 +125,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     );
     set({ sessions: nextSessions });
     void persistSessions(nextSessions);
+    publishSessionUpdate(tableNumber, nextSessions);
   },
   setHostGuest: (tableNumber, guestId) => {
     const nextSessions = get().sessions.map((session) =>
@@ -124,6 +135,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     );
     set({ sessions: nextSessions });
     void persistSessions(nextSessions);
+    publishSessionUpdate(tableNumber, nextSessions);
   },
   setTipPercentage: (tableNumber, tipPercentage) => {
     const normalizedTip = Math.max(0, Math.round(tipPercentage));
@@ -134,6 +146,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     );
     set({ sessions: nextSessions });
     void persistSessions(nextSessions);
+    publishSessionUpdate(tableNumber, nextSessions);
   },
   removeGuestFromTable: (tableNumber, guestId) => {
     const nextSessions = get().sessions.map((session) => {
@@ -149,10 +162,42 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
     set({ sessions: nextSessions });
     void persistSessions(nextSessions);
+    publishSessionUpdate(tableNumber, nextSessions);
   },
   clearTableSession: (tableNumber) => {
     const nextSessions = get().sessions.filter((session) => session.table_number !== tableNumber);
     set({ sessions: nextSessions });
     void persistSessions(nextSessions);
+    // Para notificar que la mesa se cerró, enviamos una sesión vacía
+    deviceService.publish(`penpito/table/${tableNumber}/session`, '{}');
+  },
+  syncSessionFromNetwork: (tableNumber, nextSession) => {
+    // Si recibimos un objeto vacío, significa que se cerró la sesión de la mesa
+    if (!nextSession || Object.keys(nextSession).length === 0) {
+      const nextSessions = get().sessions.filter((s) => s.table_number !== tableNumber);
+      set({ sessions: nextSessions });
+      void persistSessions(nextSessions);
+      return;
+    }
+
+    const hasSession = get().sessions.some((s) => s.table_number === tableNumber);
+    let nextSessions: TableSession[];
+    if (hasSession) {
+      nextSessions = get().sessions.map((s) =>
+        s.table_number === tableNumber ? nextSession : s
+      );
+    } else {
+      nextSessions = [...get().sessions, nextSession];
+    }
+    set({ sessions: nextSessions });
+    void persistSessions(nextSessions);
+  },
+  setDeviceGuestName: async (name) => {
+    set({ deviceGuestName: name });
+    if (name) {
+      await AsyncStorage.setItem('penpito.device.guestName', name);
+    } else {
+      await AsyncStorage.removeItem('penpito.device.guestName');
+    }
   },
 }));

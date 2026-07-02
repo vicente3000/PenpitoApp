@@ -28,6 +28,7 @@ import {
   DrinkOrder,
   DrinkPreparationOptions,
   MachineState,
+  MachineSettings,
   PiscolaIntensity,
   Recipe,
   SessionGuest,
@@ -54,7 +55,7 @@ type CartItem = {
   quantity: number;
 };
 
-type Esp32DeviceKey = 'pumps' | 'motor';
+type Esp32DeviceKey = 'pumps' | 'motor' | 'kraken';
 
 type Esp32WifiConfig = {
   ssid: string;
@@ -70,11 +71,16 @@ type SplitOption = {
 };
 
 const esp32Devices: { id: Esp32DeviceKey; title: string }[] = [
-  { id: 'pumps', title: 'ESP32 bombas' },
-  { id: 'motor', title: 'ESP32 motor' },
+  { id: 'kraken', title: 'ESP32 Coctelera (Kraken)' },
 ];
 
 const defaultEsp32WifiConfig: Record<Esp32DeviceKey, Esp32WifiConfig> = {
+  kraken: {
+    ssid: '',
+    password: '',
+    mqttHost: '192.168.1.100',
+    mqttPort: '1883',
+  },
   pumps: {
     ssid: '',
     password: '',
@@ -168,19 +174,28 @@ function getDrinkCardImage(recipeId: string): ImageSourcePropType | null {
 
 function getRecipePrice(recipeId: string, settings: {
   piscola_price: number;
-  whisky_rocks_price: number;
   negroni_price: number;
-  gin_tonic_price: number;
+  boulevardier_price: number;
+  godfather_price: number;
+  americano_price: number;
+  whisky_rocks_price: number;
+  campari_rocks_price: number;
 }) {
   switch (recipeId) {
     case 'piscola':
       return settings.piscola_price;
-    case 'whisky_rocks':
-      return settings.whisky_rocks_price;
     case 'negroni':
       return settings.negroni_price;
-    case 'gin_tonic':
-      return settings.gin_tonic_price;
+    case 'boulevardier':
+      return settings.boulevardier_price;
+    case 'godfather':
+      return settings.godfather_price;
+    case 'americano':
+      return settings.americano_price;
+    case 'whisky_rocks':
+      return settings.whisky_rocks_price;
+    case 'campari_rocks':
+      return settings.campari_rocks_price;
     default:
       return 0;
   }
@@ -238,6 +253,8 @@ export function MainAppScreen() {
     setTipPercentage,
     removeGuestFromTable,
     clearTableSession,
+    deviceGuestName,
+    setDeviceGuestName,
   } = useSessionStore();
 
   const [activeEntry, setActiveEntry] = useState<AppEntryQr | null>(adminTestMode ? adminTestEntry : null);
@@ -257,9 +274,12 @@ export function MainAppScreen() {
   const [inventoryFeedback, setInventoryFeedback] = useState('');
   const [bottleCapacityInputs, setBottleCapacityInputs] = useState<Record<string, string>>({});
   const [piscolaPrice, setPiscolaPrice] = useState('');
-  const [whiskyPrice, setWhiskyPrice] = useState('');
   const [negroniPrice, setNegroniPrice] = useState('');
-  const [ginTonicPrice, setGinTonicPrice] = useState('');
+  const [boulevardierPrice, setBoulevardierPrice] = useState('');
+  const [godfatherPrice, setGodfatherPrice] = useState('');
+  const [americanoPrice, setAmericanoPrice] = useState('');
+  const [whiskyPrice, setWhiskyPrice] = useState('');
+  const [campariRocksPrice, setCampariRocksPrice] = useState('');
   const [esp32WifiConfig, setEsp32WifiConfig] =
     useState<Record<Esp32DeviceKey, Esp32WifiConfig>>(defaultEsp32WifiConfig);
   const [esp32Feedback, setEsp32Feedback] = useState('');
@@ -274,9 +294,12 @@ export function MainAppScreen() {
     setIceDispenseTimeS(String(settings.ice_dispense_time_s));
     setAutoCleanEnabled(settings.auto_clean_enabled);
     setPiscolaPrice(String(settings.piscola_price));
-    setWhiskyPrice(String(settings.whisky_rocks_price));
     setNegroniPrice(String(settings.negroni_price));
-    setGinTonicPrice(String(settings.gin_tonic_price));
+    setBoulevardierPrice(String(settings.boulevardier_price));
+    setGodfatherPrice(String(settings.godfather_price));
+    setAmericanoPrice(String(settings.americano_price));
+    setWhiskyPrice(String(settings.whisky_rocks_price));
+    setCampariRocksPrice(String(settings.campari_rocks_price));
   }, [settings]);
 
   useEffect(() => {
@@ -299,8 +322,96 @@ export function MainAppScreen() {
       return;
     }
 
-    ensureTableSession(activeEntry.table_number, activeEntry.qr_value);
-  }, [activeEntry, ensureTableSession]);
+    const session = ensureTableSession(activeEntry.table_number, activeEntry.qr_value);
+    
+    // Si este dispositivo tiene un nombre guardado, nos auto-logueamos en la mesa
+    if (deviceGuestName) {
+      const cleanName = deviceGuestName.trim();
+      const existingGuest = session.guests.find(
+        (g) => g.name.trim().toLowerCase() === cleanName.toLowerCase()
+      );
+      if (existingGuest) {
+        setCurrentGuestId(existingGuest.id);
+        setGuestNameInput(existingGuest.name);
+      } else {
+        // Unirse automáticamente a la sesión si no está en la mesa
+        const guest = joinTable(activeEntry.table_number, activeEntry.qr_value, cleanName);
+        setCurrentGuestId(guest.id);
+        setGuestNameInput(guest.name);
+      }
+    } else {
+      setCurrentGuestId(null);
+      setGuestNameInput('');
+    }
+  }, [activeEntry, ensureTableSession, deviceGuestName, joinTable]);
+
+  useEffect(() => {
+    if (!activeEntry || activeEntry.type !== 'table') {
+      return;
+    }
+
+    const tableNum = activeEntry.table_number;
+    console.log(`[MqttSync] Iniciando suscripciones de sincronizacion para mesa ${tableNum}`);
+
+    // Suscribirse a actualizaciones de la sesion de la mesa
+    const unsubSession = deviceService.subscribeCustom(
+      `penpito/table/${tableNum}/session`,
+      (payload) => {
+        try {
+          const session = JSON.parse(payload);
+          useSessionStore.getState().syncSessionFromNetwork(tableNum, session);
+        } catch (err) {
+          console.warn('[MqttSync] Error parseando payload de sesion', err);
+        }
+      }
+    );
+
+    // Suscribirse a actualizaciones de las ordenes de la mesa
+    const unsubOrders = deviceService.subscribeCustom(
+      `penpito/table/${tableNum}/orders`,
+      (payload) => {
+        try {
+          const orders = JSON.parse(payload);
+          void useOrderStore.getState().syncOrdersFromNetwork(tableNum, orders);
+        } catch (err) {
+          console.warn('[MqttSync] Error parseando payload de ordenes', err);
+        }
+      }
+    );
+
+    // Suscribirse a solicitudes de sincronizacion inicial de otros clientes
+    const unsubSyncRequest = deviceService.subscribeCustom(
+      `penpito/table/${tableNum}/request`,
+      (payload) => {
+        try {
+          const req = JSON.parse(payload);
+          if (req.type === 'SYNC_REQUEST') {
+            console.log('[MqttSync] Recibida solicitud de sincronizacion. Enviando mi estado local...');
+            const mySession = useSessionStore.getState().sessions.find((s) => s.table_number === tableNum);
+            if (mySession) {
+              deviceService.publish(`penpito/table/${tableNum}/session`, JSON.stringify(mySession));
+            }
+            const myOrders = useOrderStore.getState().orders.filter((o) => o.table_number === tableNum);
+            deviceService.publish(`penpito/table/${tableNum}/orders`, JSON.stringify(myOrders));
+          }
+        } catch (err) {
+          // ignorar
+        }
+      }
+    );
+
+    // Enviar una peticion de sincronizacion para que otros dispositivos me actualicen
+    const syncTimeout = setTimeout(() => {
+      deviceService.publish(`penpito/table/${tableNum}/request`, JSON.stringify({ type: 'SYNC_REQUEST' }));
+    }, 1000);
+
+    return () => {
+      unsubSession?.();
+      unsubOrders?.();
+      unsubSyncRequest?.();
+      clearTimeout(syncTimeout);
+    };
+  }, [activeEntry]);
 
   const selectedRecipe = useMemo(
     () => recipes.find((recipe) => recipe.id === selectedRecipeId) ?? null,
@@ -423,6 +534,7 @@ export function MainAppScreen() {
     const guest = joinTable(activeEntry.table_number, activeEntry.qr_value, cleanName);
     setCurrentGuestId(guest.id);
     setGuestNameInput(guest.name);
+    void setDeviceGuestName(guest.name);
   };
 
   const handleAddCartItem = (recipe: Recipe, quantity: number) => {
@@ -599,25 +711,34 @@ export function MainAppScreen() {
     const nextDispenseSpeed = Number(dispenseSpeedMlS);
     const nextIceTime = Number(iceDispenseTimeS);
     const nextPiscolaPrice = Number(piscolaPrice);
-    const nextWhiskyPrice = Number(whiskyPrice);
     const nextNegroniPrice = Number(negroniPrice);
-    const nextGinTonicPrice = Number(ginTonicPrice);
+    const nextBoulevardierPrice = Number(boulevardierPrice);
+    const nextGodfatherPrice = Number(godfatherPrice);
+    const nextAmericanoPrice = Number(americanoPrice);
+    const nextWhiskyPrice = Number(whiskyPrice);
+    const nextCampariRocksPrice = Number(campariRocksPrice);
 
     if (
       !Number.isFinite(nextBottleCapacity) ||
       !Number.isFinite(nextDispenseSpeed) ||
       !Number.isFinite(nextIceTime) ||
       !Number.isFinite(nextPiscolaPrice) ||
-      !Number.isFinite(nextWhiskyPrice) ||
       !Number.isFinite(nextNegroniPrice) ||
-      !Number.isFinite(nextGinTonicPrice) ||
+      !Number.isFinite(nextBoulevardierPrice) ||
+      !Number.isFinite(nextGodfatherPrice) ||
+      !Number.isFinite(nextAmericanoPrice) ||
+      !Number.isFinite(nextWhiskyPrice) ||
+      !Number.isFinite(nextCampariRocksPrice) ||
       nextBottleCapacity <= 0 ||
       nextDispenseSpeed <= 0 ||
       nextIceTime <= 0 ||
       nextPiscolaPrice <= 0 ||
-      nextWhiskyPrice <= 0 ||
       nextNegroniPrice <= 0 ||
-      nextGinTonicPrice <= 0
+      nextBoulevardierPrice <= 0 ||
+      nextGodfatherPrice <= 0 ||
+      nextAmericanoPrice <= 0 ||
+      nextWhiskyPrice <= 0 ||
+      nextCampariRocksPrice <= 0
     ) {
       setSettingsFeedback('Revisa parametros y precios. Todos deben ser mayores a 0.');
       return;
@@ -629,9 +750,12 @@ export function MainAppScreen() {
       ice_dispense_time_s: Math.round(nextIceTime),
       auto_clean_enabled: autoCleanEnabled,
       piscola_price: Math.round(nextPiscolaPrice),
-      whisky_rocks_price: Math.round(nextWhiskyPrice),
       negroni_price: Math.round(nextNegroniPrice),
-      gin_tonic_price: Math.round(nextGinTonicPrice),
+      boulevardier_price: Math.round(nextBoulevardierPrice),
+      godfather_price: Math.round(nextGodfatherPrice),
+      americano_price: Math.round(nextAmericanoPrice),
+      whisky_rocks_price: Math.round(nextWhiskyPrice),
+      campari_rocks_price: Math.round(nextCampariRocksPrice),
     };
 
     await updateSettings(nextSettings);
@@ -789,16 +913,22 @@ export function MainAppScreen() {
             setDispenseSpeedMlS={setDispenseSpeedMlS}
             setIceDispenseTimeS={setIceDispenseTimeS}
             setPiscolaPrice={setPiscolaPrice}
-            setWhiskyPrice={setWhiskyPrice}
             setNegroniPrice={setNegroniPrice}
-            setGinTonicPrice={setGinTonicPrice}
+            setBoulevardierPrice={setBoulevardierPrice}
+            setGodfatherPrice={setGodfatherPrice}
+            setAmericanoPrice={setAmericanoPrice}
+            setWhiskyPrice={setWhiskyPrice}
+            setCampariRocksPrice={setCampariRocksPrice}
             settingsFeedback={settingsFeedback}
             inventoryFeedback={inventoryFeedback}
             bottleCapacityInputs={bottleCapacityInputs}
             piscolaPrice={piscolaPrice}
-            whiskyPrice={whiskyPrice}
             negroniPrice={negroniPrice}
-            ginTonicPrice={ginTonicPrice}
+            boulevardierPrice={boulevardierPrice}
+            godfatherPrice={godfatherPrice}
+            americanoPrice={americanoPrice}
+            whiskyPrice={whiskyPrice}
+            campariRocksPrice={campariRocksPrice}
             esp32WifiConfig={esp32WifiConfig}
             esp32Feedback={esp32Feedback}
             setEsp32ConfigValue={setEsp32ConfigValue}
@@ -875,6 +1005,7 @@ export function MainAppScreen() {
           setCart([]);
         }}
         onStartNewGuest={() => {
+          void setDeviceGuestName(null);
           setCurrentGuestId(null);
           setGuestNameInput('');
           setCart([]);
@@ -984,6 +1115,33 @@ function EntryScannerScreen({ onResolved }: { onResolved: (entry: AppEntryQr) =>
           )}
 
           {scanError ? <Text style={styles.errorText}>{scanError}</Text> : null}
+
+          <View style={{ marginTop: 24, borderTopWidth: 1, borderTopColor: Colors.border, paddingTop: 20 }}>
+            <Text style={[styles.sectionTitle, { fontSize: 16 }]}>Simulación para Demostración</Text>
+            <Text style={[styles.sectionText, { fontSize: 13, marginBottom: 12 }]}>
+              Usa estos accesos directos para probar la app en emuladores o si no tienes los códigos QR impresos.
+            </Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
+              <TouchableOpacity
+                style={[styles.secondaryActionButton, { flex: 1, paddingVertical: 10 }]}
+                onPress={() => onResolved({ type: 'table', table_number: 3, qr_value: 'PENPITO:MESA:03' })}
+              >
+                <Text style={[styles.secondaryActionButtonText, { fontSize: 13 }]}>Mesa 3</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.secondaryActionButton, { flex: 1, paddingVertical: 10 }]}
+                onPress={() => onResolved({ type: 'waiter', qr_value: 'PENPITO:MESERO' })}
+              >
+                <Text style={[styles.secondaryActionButtonText, { fontSize: 13 }]}>Mesero</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.secondaryActionButton, { flex: 1, paddingVertical: 10 }]}
+                onPress={() => onResolved({ type: 'admin', qr_value: 'PENPITO:ADMIN' })}
+              >
+                <Text style={[styles.secondaryActionButtonText, { fontSize: 13 }]}>Admin</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -1007,12 +1165,7 @@ type UserPortalProps = {
   onDeleteQueuedOrder: (order: DrinkOrder) => void;
   recipeAvailability: (recipe: Recipe) => boolean;
   recipes: Recipe[];
-  settings: {
-    piscola_price: number;
-    whisky_rocks_price: number;
-    negroni_price: number;
-    gin_tonic_price: number;
-  };
+  settings: MachineSettings;
   selectedRecipe: Recipe | null;
   session: TableSession | null;
   setGuestNameInput: (value: string) => void;
@@ -1229,13 +1382,12 @@ function UserPortalScreen({
             </Text>
             <View style={styles.guestList}>
               {session?.guests.map((guest) => (
-                <TouchableOpacity
+                <View
                   key={guest.id}
                   style={[
                     styles.guestChip,
                     guest.name === currentGuestName && styles.guestChipActive,
-                  ]}
-                  onPress={() => onSelectGuest(guest.id)}>
+                  ]}>
                   <Text
                     style={[
                       styles.guestChipText,
@@ -1243,11 +1395,11 @@ function UserPortalScreen({
                     ]}>
                     {guest.name}
                   </Text>
-                </TouchableOpacity>
+                </View>
               ))}
             </View>
             <TouchableOpacity style={styles.secondaryActionButton} onPress={onStartNewGuest}>
-              <Text style={styles.secondaryActionButtonText}>Agregar otra persona</Text>
+              <Text style={styles.secondaryActionButtonText}>Cambiar mi nombre / Cerrar sesión</Text>
             </TouchableOpacity>
           </View>
 
@@ -1504,12 +1656,7 @@ function WaiterScreen({
   queuedOrdersCount: number;
   readyOrdersCount: number;
   sessions: TableSession[];
-  settings: {
-    piscola_price: number;
-    whisky_rocks_price: number;
-    negroni_price: number;
-    gin_tonic_price: number;
-  };
+  settings: MachineSettings;
 }) {
   const sessionByTable = new Map(sessions.map((session) => [session.table_number, session]));
   const tableNumbers = new Set<number>([
@@ -1734,9 +1881,12 @@ type AdminScreenProps = {
   machineState: MachineState;
   settings: {
     piscola_price: number;
-    whisky_rocks_price: number;
     negroni_price: number;
-    gin_tonic_price: number;
+    boulevardier_price: number;
+    godfather_price: number;
+    americano_price: number;
+    whisky_rocks_price: number;
+    campari_rocks_price: number;
   };
   onBack: () => void;
   onMarkServed: (orderId: string) => void;
@@ -1753,15 +1903,21 @@ type AdminScreenProps = {
   setDispenseSpeedMlS: (value: string) => void;
   setIceDispenseTimeS: (value: string) => void;
   setPiscolaPrice: (value: string) => void;
-  setWhiskyPrice: (value: string) => void;
   setNegroniPrice: (value: string) => void;
-  setGinTonicPrice: (value: string) => void;
+  setBoulevardierPrice: (value: string) => void;
+  setGodfatherPrice: (value: string) => void;
+  setAmericanoPrice: (value: string) => void;
+  setWhiskyPrice: (value: string) => void;
+  setCampariRocksPrice: (value: string) => void;
   settingsFeedback: string;
   inventoryFeedback: string;
   piscolaPrice: string;
-  whiskyPrice: string;
   negroniPrice: string;
-  ginTonicPrice: string;
+  boulevardierPrice: string;
+  godfatherPrice: string;
+  americanoPrice: string;
+  whiskyPrice: string;
+  campariRocksPrice: string;
   esp32WifiConfig: Record<Esp32DeviceKey, Esp32WifiConfig>;
   esp32Feedback: string;
   setEsp32ConfigValue: (deviceId: Esp32DeviceKey, field: keyof Esp32WifiConfig, value: string) => void;
@@ -1793,20 +1949,57 @@ function AdminScreen({
   setDispenseSpeedMlS,
   setIceDispenseTimeS,
   setPiscolaPrice,
-  setWhiskyPrice,
   setNegroniPrice,
-  setGinTonicPrice,
+  setBoulevardierPrice,
+  setGodfatherPrice,
+  setAmericanoPrice,
+  setWhiskyPrice,
+  setCampariRocksPrice,
   settingsFeedback,
   inventoryFeedback,
   piscolaPrice,
-  whiskyPrice,
   negroniPrice,
-  ginTonicPrice,
+  boulevardierPrice,
+  godfatherPrice,
+  americanoPrice,
+  whiskyPrice,
+  campariRocksPrice,
   esp32WifiConfig,
   esp32Feedback,
   setEsp32ConfigValue,
   onSendEsp32Config,
 }: AdminScreenProps) {
+  const [testPumpNum, setTestPumpNum] = useState('1');
+  const [testPumpDuration, setTestPumpDuration] = useState('3000');
+  const [testServoNum, setTestServoNum] = useState('1');
+  const [testServoAngle, setTestServoAngle] = useState('90');
+  const [testSpoonSpeed, setTestSpoonSpeed] = useState('0');
+  const [testSpoonDuration, setTestSpoonDuration] = useState('3000');
+  const [testMotorSteps, setTestMotorSteps] = useState('100');
+  const [localFeedback, setLocalFeedback] = useState('');
+
+  const handleSendTestHw = async (payload: {
+    type: 'pump' | 'servo' | 'servo_cont' | 'motor' | 'motor_home';
+    pin?: number;
+    val?: number;
+    duration?: number;
+  }) => {
+    setLocalFeedback(`Enviando comando: ${payload.type}...`);
+    const success = await deviceService.sendCommand({
+      cmd: 'TEST_HW',
+      val: payload.type,
+      target: 'kraken',
+      ...payload,
+    } as any);
+
+    setLocalFeedback(
+      success
+        ? `Comando enviado correctamente.`
+        : `Fallo al enviar comando.`
+    );
+    setTimeout(() => setLocalFeedback(''), 4000);
+  };
+
   const recipeStats = useMemo(() => {
     const grouped = new Map<string, { name: string; count: number }>();
     orders.forEach((order) => {
@@ -1910,9 +2103,12 @@ function AdminScreen({
       <View style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>Precios actuales</Text>
         <Text style={styles.sectionText}>Piscola: {formatCurrency(settings.piscola_price)}</Text>
-        <Text style={styles.sectionText}>Whisky: {formatCurrency(settings.whisky_rocks_price)}</Text>
         <Text style={styles.sectionText}>Negroni: {formatCurrency(settings.negroni_price)}</Text>
-        <Text style={styles.sectionText}>Gin Tonic: {formatCurrency(settings.gin_tonic_price)}</Text>
+        <Text style={styles.sectionText}>Boulevardier: {formatCurrency(settings.boulevardier_price)}</Text>
+        <Text style={styles.sectionText}>Godfather: {formatCurrency(settings.godfather_price)}</Text>
+        <Text style={styles.sectionText}>Americano: {formatCurrency(settings.americano_price)}</Text>
+        <Text style={styles.sectionText}>Whisky: {formatCurrency(settings.whisky_rocks_price)}</Text>
+        <Text style={styles.sectionText}>Campari a la Roca: {formatCurrency(settings.campari_rocks_price)}</Text>
       </View>
 
       <View style={styles.sectionCard}>
@@ -1930,14 +2126,23 @@ function AdminScreen({
         <Text style={styles.inputLabel}>Precio Piscola</Text>
         <TextInput keyboardType="numeric" style={styles.input} value={piscolaPrice} onChangeText={setPiscolaPrice} />
 
-        <Text style={styles.inputLabel}>Precio Whisky</Text>
-        <TextInput keyboardType="numeric" style={styles.input} value={whiskyPrice} onChangeText={setWhiskyPrice} />
-
         <Text style={styles.inputLabel}>Precio Negroni</Text>
         <TextInput keyboardType="numeric" style={styles.input} value={negroniPrice} onChangeText={setNegroniPrice} />
 
-        <Text style={styles.inputLabel}>Precio Gin Tonic</Text>
-        <TextInput keyboardType="numeric" style={styles.input} value={ginTonicPrice} onChangeText={setGinTonicPrice} />
+        <Text style={styles.inputLabel}>Precio Boulevardier</Text>
+        <TextInput keyboardType="numeric" style={styles.input} value={boulevardierPrice} onChangeText={setBoulevardierPrice} />
+
+        <Text style={styles.inputLabel}>Precio Godfather</Text>
+        <TextInput keyboardType="numeric" style={styles.input} value={godfatherPrice} onChangeText={setGodfatherPrice} />
+
+        <Text style={styles.inputLabel}>Precio Americano</Text>
+        <TextInput keyboardType="numeric" style={styles.input} value={americanoPrice} onChangeText={setAmericanoPrice} />
+
+        <Text style={styles.inputLabel}>Precio Whisky a la Roca</Text>
+        <TextInput keyboardType="numeric" style={styles.input} value={whiskyPrice} onChangeText={setWhiskyPrice} />
+
+        <Text style={styles.inputLabel}>Precio Campari a la Roca</Text>
+        <TextInput keyboardType="numeric" style={styles.input} value={campariRocksPrice} onChangeText={setCampariRocksPrice} />
 
         <View style={styles.switchRow}>
           <Text style={styles.inputLabel}>Limpieza automatica</Text>
@@ -1952,6 +2157,211 @@ function AdminScreen({
         {settingsFeedback ? <Text style={styles.helperText}>{settingsFeedback}</Text> : null}
         <TouchableOpacity style={styles.primaryButton} onPress={onSaveSettings}>
           <Text style={styles.primaryButtonText}>Guardar parametros</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>Diagnósticos y Calibración Manual</Text>
+        <Text style={styles.sectionText}>Prueba y calibra los actuadores físicos en tiempo real vía MQTT.</Text>
+        
+        {localFeedback ? (
+          <Text style={[styles.helperText, {color: Colors.primary, marginBottom: 10, fontWeight: 'bold'}]}>
+            {localFeedback}
+          </Text>
+        ) : null}
+
+        {/* BOMBAS */}
+        <View style={styles.deviceConfigBlock}>
+          <Text style={styles.orderTitle}>Prueba de Bombas</Text>
+          <Text style={styles.inputLabel}>Seleccionar Bomba (1-7)</Text>
+          <TextInput
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="1"
+            value={testPumpNum}
+            onChangeText={setTestPumpNum}
+          />
+          <Text style={styles.inputLabel}>Duración de encendido (ms)</Text>
+          <TextInput
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="3000"
+            value={testPumpDuration}
+            onChangeText={setTestPumpDuration}
+          />
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1, marginRight: 8}]} 
+              onPress={() => handleSendTestHw({
+                type: 'pump',
+                pin: Number(testPumpNum),
+                duration: Number(testPumpDuration)
+              })}
+            >
+              <Text style={styles.secondaryActionButtonText}>Probar Bomba</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1}]} 
+              onPress={() => handleSendTestHw({
+                type: 'pump',
+                pin: Number(testPumpNum),
+                duration: 10000
+              })}
+            >
+              <Text style={styles.secondaryActionButtonText}>Calibrar (10s)</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* SERVOS POSICIONALES */}
+        <View style={styles.deviceConfigBlock}>
+          <Text style={styles.orderTitle}>Prueba de Servos Posicionales</Text>
+          <Text style={styles.inputLabel}>Seleccionar Servo (1: Vaso, 2: Hielo A, 3: Hielo B)</Text>
+          <TextInput
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="1"
+            value={testServoNum}
+            onChangeText={setTestServoNum}
+          />
+          <Text style={styles.inputLabel}>Ángulo de destino (0 - 180°)</Text>
+          <TextInput
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="90"
+            value={testServoAngle}
+            onChangeText={setTestServoAngle}
+          />
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1, marginRight: 4}]} 
+              onPress={() => {
+                setTestServoAngle('0');
+                void handleSendTestHw({ type: 'servo', pin: Number(testServoNum), val: 0 });
+              }}
+            >
+              <Text style={styles.secondaryActionButtonText}>0° (Cerrar)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1, marginRight: 4}]} 
+              onPress={() => {
+                setTestServoAngle('90');
+                void handleSendTestHw({ type: 'servo', pin: Number(testServoNum), val: 90 });
+              }}
+            >
+              <Text style={styles.secondaryActionButtonText}>90°</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1}]} 
+              onPress={() => {
+                setTestServoAngle('180');
+                void handleSendTestHw({ type: 'servo', pin: Number(testServoNum), val: 180 });
+              }}
+            >
+              <Text style={styles.secondaryActionButtonText}>180° (Abrir)</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity 
+            style={[styles.primaryButton, {marginTop: 8}]} 
+            onPress={() => handleSendTestHw({
+              type: 'servo',
+              pin: Number(testServoNum),
+              val: Number(testServoAngle)
+            })}
+          >
+            <Text style={styles.primaryButtonText}>Mover Servo</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* SERVO CONTINUO */}
+        <View style={styles.deviceConfigBlock}>
+          <Text style={styles.orderTitle}>Prueba de Servo Continuo (Cuchara)</Text>
+          <Text style={styles.inputLabel}>Velocidad (-100 a 100). Subir: -100, Parar: 0, Bajar: 100</Text>
+          <TextInput
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="0"
+            value={testSpoonSpeed}
+            onChangeText={setTestSpoonSpeed}
+          />
+          <Text style={styles.inputLabel}>Duración de giro (ms, 0 = infinito)</Text>
+          <TextInput
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="3000"
+            value={testSpoonDuration}
+            onChangeText={setTestSpoonDuration}
+          />
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1, marginRight: 4}]} 
+              onPress={() => {
+                setTestSpoonSpeed('-100');
+                void handleSendTestHw({ type: 'servo_cont', val: -100, duration: Number(testSpoonDuration) });
+              }}
+            >
+              <Text style={styles.secondaryActionButtonText}>Subir</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1, marginRight: 4}]} 
+              onPress={() => {
+                setTestSpoonSpeed('0');
+                void handleSendTestHw({ type: 'servo_cont', val: 0 });
+              }}
+            >
+              <Text style={styles.secondaryActionButtonText}>Detener</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1}]} 
+              onPress={() => {
+                setTestSpoonSpeed('100');
+                void handleSendTestHw({ type: 'servo_cont', val: 100, duration: Number(testSpoonDuration) });
+              }}
+            >
+              <Text style={styles.secondaryActionButtonText}>Bajar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* MOTOR */}
+        <View style={styles.deviceConfigBlock}>
+          <Text style={styles.orderTitle}>Pruebas de Riel (NEMA17)</Text>
+          <Text style={styles.inputLabel}>Pasos a mover (Ej: 200, -200)</Text>
+          <TextInput
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="100"
+            value={testMotorSteps}
+            onChangeText={setTestMotorSteps}
+          />
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1, marginRight: 8}]} 
+              onPress={() => handleSendTestHw({
+                type: 'motor',
+                val: Number(testMotorSteps)
+              })}
+            >
+              <Text style={styles.secondaryActionButtonText}>Mover Pasos</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.secondaryActionButton, {flex: 1}]} 
+              onPress={() => handleSendTestHw({
+                type: 'motor_home'
+              })}
+            >
+              <Text style={styles.secondaryActionButtonText}>Ejecutar Home</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <TouchableOpacity 
+          style={[styles.alertButton, {marginTop: 12, backgroundColor: Colors.error}]} 
+          onPress={() => {
+            void deviceService.sendCommand({ cmd: 'POWER', val: 'OFF', target: 'kraken' });
+          }}
+        >
+          <Text style={styles.alertButtonText}>PARADA DE EMERGENCIA (Todo Off)</Text>
         </TouchableOpacity>
       </View>
 
@@ -2057,6 +2467,18 @@ function MetricCard({
 }
 
 const styles = StyleSheet.create({
+  alertButton: {
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  alertButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: 'bold',
+  },
   safeArea: {
     flex: 1,
     backgroundColor: Colors.background,

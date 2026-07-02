@@ -1,17 +1,17 @@
 import { BottleInventory, DrinkPreparationOptions, PiscolaIntensity, Recipe } from '../models';
 
-export const ML_PER_OUNCE = 29.57;
+export const ML_PER_OUNCE = 30.0;
 
 export const DEFAULT_BOTTLE_CAPACITY_ML = 1000;
 
 export const ingredientCatalog = [
   { id: 'pisco', ingredient_name: 'Pisco', display_name: 'Botella de Pisco' },
-  { id: 'bebida_cola', ingredient_name: 'Bebida Cola', display_name: 'Botella de Coca-Cola' },
-  { id: 'whisky', ingredient_name: 'Whisky', display_name: 'Botella de Whisky' },
+  { id: 'amaretto', ingredient_name: 'Amaretto', display_name: 'Botella de Amaretto' },
   { id: 'gin', ingredient_name: 'Gin', display_name: 'Botella de Gin' },
   { id: 'campari', ingredient_name: 'Campari', display_name: 'Botella de Campari' },
-  { id: 'vermut_rojo', ingredient_name: 'Vermut Rojo', display_name: 'Botella de Vermut Rojo' },
-  { id: 'tonica', ingredient_name: 'Tonica', display_name: 'Botella de Tonica' },
+  { id: 'vermut_rosso', ingredient_name: 'Vermut Rosso', display_name: 'Botella de Vermut Rosso' },
+  { id: 'whisky', ingredient_name: 'Whisky', display_name: 'Botella de Whisky' },
+  { id: 'coca_cola', ingredient_name: 'Coca-Cola', display_name: 'Botella de Coca-Cola' },
 ] as const;
 
 export const piscolaProfiles: Record<
@@ -76,7 +76,7 @@ export function getRecipeUsageMl(recipe: Recipe, options: DrinkPreparationOption
         ),
       },
       {
-        ingredient_name: 'Bebida Cola',
+        ingredient_name: 'Coca-Cola',
         amount_ml: Number(
           ozToMl(options.mixerOz ?? piscolaProfiles[options.piscolaIntensity ?? 'normal'].mixerOz).toFixed(0)
         ),

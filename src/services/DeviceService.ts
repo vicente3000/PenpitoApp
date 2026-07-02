@@ -24,6 +24,19 @@ export class DeviceService {
   onStateChange(callback: (state: MachineState) => void): void {
     this.adapter.onStateChange(callback);
   }
+
+  publish(topic: string, payload: string): void {
+    if ('publish' in this.adapter) {
+      (this.adapter as any).publish(topic, payload);
+    }
+  }
+
+  subscribeCustom(topic: string, callback: (payload: string) => void): (() => void) | undefined {
+    if ('subscribeCustom' in this.adapter) {
+      return (this.adapter as any).subscribeCustom(topic, callback);
+    }
+    return undefined;
+  }
 }
 
 export const deviceService = new DeviceService(new KrakenMqttAdapter());

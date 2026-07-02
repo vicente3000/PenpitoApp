@@ -20,11 +20,55 @@ const recipeSeedStatements = [
    VALUES (
      'piscola',
      'Piscola',
-     'Pisco con bebida cola con perfiles suave, normal y fuerte.',
+     'Pisco con Coca-Cola con perfiles suave, normal y fuerte.',
      NULL,
-     '[{"ingredient_name":"Pisco","amount_ml":88.71},{"ingredient_name":"Bebida Cola","amount_ml":221.78}]',
+     '[{"ingredient_name":"Pisco","amount_ml":90.0},{"ingredient_name":"Coca-Cola","amount_ml":225.0}]',
      20,
      14,
+     1
+   )`,
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+   VALUES (
+     'negroni',
+     'Negroni',
+     'Clasico coctel de gin, campari y vermut rosso con 4 hielos.',
+     NULL,
+     '[{"ingredient_name":"Gin","amount_ml":30.0},{"ingredient_name":"Campari","amount_ml":30.0},{"ingredient_name":"Vermut Rosso","amount_ml":30.0}]',
+     18,
+     24,
+     1
+   )`,
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+   VALUES (
+     'boulevardier',
+     'Boulevardier',
+     'Elegante variacion del Negroni usando Whisky en lugar de Gin.',
+     NULL,
+     '[{"ingredient_name":"Whisky","amount_ml":30.0},{"ingredient_name":"Campari","amount_ml":30.0},{"ingredient_name":"Vermut Rosso","amount_ml":30.0}]',
+     18,
+     28,
+     1
+   )`,
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+   VALUES (
+     'godfather',
+     'Godfather',
+     'Mezcla clasica de Whisky y Amaretto con 4 hielos.',
+     NULL,
+     '[{"ingredient_name":"Whisky","amount_ml":60.0},{"ingredient_name":"Amaretto","amount_ml":30.0}]',
+     15,
+     35,
+     1
+   )`,
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+   VALUES (
+     'americano',
+     'Americano',
+     'Suave coctel a base de Campari y Vermut Rosso.',
+     NULL,
+     '[{"ingredient_name":"Campari","amount_ml":45.0},{"ingredient_name":"Vermut Rosso","amount_ml":45.0}]',
+     15,
+     12,
      1
    )`,
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
@@ -33,31 +77,20 @@ const recipeSeedStatements = [
      'Whisky a la Roca',
      'Whisky servido con 4 hielos.',
      NULL,
-     '[{"ingredient_name":"Whisky","amount_ml":73.93}]',
+     '[{"ingredient_name":"Whisky","amount_ml":60.0}]',
      12,
      40,
      1
    )`,
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
    VALUES (
-     'negroni',
-     'Negroni',
-     'Clasico coctel de gin, campari y vermut rojo con 4 hielos.',
+     'campari_rocks',
+     'Campari a la Roca',
+     'Campari servido con 4 hielos.',
      NULL,
-     '[{"ingredient_name":"Gin","amount_ml":29.57},{"ingredient_name":"Campari","amount_ml":29.57},{"ingredient_name":"Vermut Rojo","amount_ml":29.57}]',
-     18,
-     24,
-     1
-   )`,
-  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
-   VALUES (
-     'gin_tonic',
-     'Gin & Tonic',
-     'Gin con tonica y 4 hielos.',
-     NULL,
-     '[{"ingredient_name":"Gin","amount_ml":73.93},{"ingredient_name":"Tonica","amount_ml":221.78}]',
-     15,
-     18,
+     '[{"ingredient_name":"Campari","amount_ml":60.0}]',
+     12,
+     25,
      1
    )`,
 ];
@@ -117,10 +150,13 @@ async function applySchema(db: DbHandle) {
       dispense_speed_ml_s REAL NOT NULL,
       ice_dispense_time_s INTEGER NOT NULL,
       auto_clean_enabled INTEGER NOT NULL,
-      piscola_price INTEGER NOT NULL DEFAULT 5500,
-      whisky_rocks_price INTEGER NOT NULL DEFAULT 7000,
+      piscola_price INTEGER NOT NULL DEFAULT 7000,
       negroni_price INTEGER NOT NULL DEFAULT 8000,
-      gin_tonic_price INTEGER NOT NULL DEFAULT 7000
+      boulevardier_price INTEGER NOT NULL DEFAULT 8500,
+      godfather_price INTEGER NOT NULL DEFAULT 9000,
+      americano_price INTEGER NOT NULL DEFAULT 7500,
+      whisky_rocks_price INTEGER NOT NULL DEFAULT 8000,
+      campari_rocks_price INTEGER NOT NULL DEFAULT 7500
     );
 
     CREATE TABLE IF NOT EXISTS inventory (
@@ -233,7 +269,7 @@ async function ensureInventoryColumns(db: DbHandle) {
 
 async function seedRecipes(db: DbHandle) {
   await db.execAsync(`
-    DELETE FROM recipes WHERE id IN ('r1', 'r2', 'r3', 'pisco_sour', 'margarita', 'mojito', 'dry_martini');
+    DELETE FROM recipes WHERE id IN ('r1', 'r2', 'r3', 'pisco_sour', 'margarita', 'mojito', 'dry_martini', 'gin_tonic');
     DELETE FROM inventory WHERE id = 'vermut_seco';
   `);
 

@@ -10,6 +10,7 @@ import { orderRepository } from '../repositories/OrderRepository';
 import { commandQueueService } from '../services/CommandQueueService';
 import { useAppStore } from './AppStore';
 import { getSkippedSteps } from '../utils/preparation';
+import { deviceService } from '../services/DeviceService';
 
 type CreateOrderItemInput = {
   recipe: Recipe;
@@ -38,6 +39,12 @@ interface OrderState {
   deleteOrder: (orderId: string) => Promise<DrinkOrder | null>;
   triggerNextQueuedOrder: () => Promise<boolean>;
   clearTableOrders: (tableNumber: number) => Promise<void>;
+  syncOrdersFromNetwork: (tableNumber: number, orders: DrinkOrder[]) => Promise<void>;
+}
+
+function publishOrdersUpdate(tableNumber: number, orders: DrinkOrder[]) {
+  const tableOrders = orders.filter((o) => o.table_number === tableNumber);
+  deviceService.publish(`penpito/table/${tableNumber}/orders`, JSON.stringify(tableOrders));
 }
 
 function sortOrders(orders: DrinkOrder[]) {
@@ -151,6 +158,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       orders: sortOrders([...state.orders, ...createdOrders]),
     }));
 
+    publishOrdersUpdate(table_number, get().orders);
     await get().triggerNextQueuedOrder();
     return createdOrders;
   },
@@ -184,6 +192,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       orders: upsertOrder(prevState.orders, startedOrder),
       activeOrderId: startedOrder.id,
     }));
+    publishOrdersUpdate(nextQueued.table_number, get().orders);
 
     return true;
   },
@@ -264,6 +273,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       orders: upsertOrder(prevState.orders, nextOrder),
       activeOrderId: nextOrder.status === 'preparing' ? nextOrder.id : null,
     }));
+    publishOrdersUpdate(nextOrder.table_number, get().orders);
 
     if (machineState.status === 'idle' && !machineState.isDrinkReady && nextOrder.status !== 'preparing') {
       await get().triggerNextQueuedOrder();
@@ -286,6 +296,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       orders: upsertOrder(state.orders, nextOrder),
       activeOrderId: state.activeOrderId === orderId ? null : state.activeOrderId,
     }));
+    publishOrdersUpdate(order.table_number, get().orders);
   },
   deleteOrder: async (orderId) => {
     const order = get().orders.find((entry) => entry.id === orderId);
@@ -298,6 +309,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       orders: state.orders.filter((entry) => entry.id !== orderId),
       activeOrderId: state.activeOrderId === orderId ? null : state.activeOrderId,
     }));
+    publishOrdersUpdate(order.table_number, get().orders);
 
     await get().triggerNextQueuedOrder();
     return order;
@@ -322,5 +334,24 @@ export const useOrderStore = create<OrderState>((set, get) => ({
           ? null
           : prevState.activeOrderId,
     }));
+    publishOrdersUpdate(tableNumber, []);
+  },
+  syncOrdersFromNetwork: async (tableNumber, nextOrders) => {
+    for (const order of nextOrders) {
+      await orderRepository.saveOrder(order);
+    }
+
+    if (nextOrders.length === 0) {
+      await orderRepository.deleteOrdersForTable(tableNumber);
+    }
+
+    const localOthers = get().orders.filter((o) => o.table_number !== tableNumber);
+    const updatedList = sortOrders([...localOthers, ...nextOrders]);
+    const activeOrder = updatedList.find((order) => order.status === 'preparing') ?? null;
+
+    set({
+      orders: updatedList,
+      activeOrderId: activeOrder?.id ?? null,
+    });
   },
 }));

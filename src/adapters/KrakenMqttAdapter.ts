@@ -8,7 +8,7 @@ const COMMAND_ACK_TIMEOUT_MS = 10000;
 const TOPIC_STATE = 'penpito/kraken/state';
 const TOPIC_COMMAND = 'penpito/kraken/command';
 const TOPIC_ACK = 'penpito/kraken/command/ack';
-const DEVICE_IDS = ['pumps', 'motor'] as const;
+const DEVICE_IDS = ['pumps', 'motor', 'kraken'] as const;
 
 const initialState: MachineState = {
   isOn: false,
@@ -305,6 +305,7 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
   private currentState: MachineState = initialState;
   private pendingAcks = new Map<string, PendingAck>();
   private connectPromise: Promise<boolean> | null = null;
+  private customSubscribers = new Map<string, Set<(payload: string) => void>>();
 
   constructor(private readonly brokerUrl = getMqttUrl()) {}
 
@@ -370,6 +371,36 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
     this.fireStateChange();
   }
 
+  publish(topic: string, payload: string) {
+    if (this.client) {
+      try {
+        this.client.publish(topic, payload);
+      } catch (error) {
+        console.warn(`[KrakenMqttAdapter] Error publishing to topic: ${topic}`, error);
+      }
+    }
+  }
+
+  subscribeCustom(topic: string, callback: (payload: string) => void): () => void {
+    if (!this.customSubscribers.has(topic)) {
+      this.customSubscribers.set(topic, new Set());
+      if (this.isConnected && this.client) {
+        this.client.subscribe(topic);
+      }
+    }
+    this.customSubscribers.get(topic)!.add(callback);
+
+    return () => {
+      const subs = this.customSubscribers.get(topic);
+      if (subs) {
+        subs.delete(callback);
+        if (subs.size === 0) {
+          this.customSubscribers.delete(topic);
+        }
+      }
+    };
+  }
+
   private async openConnection() {
     try {
       const client = new MinimalMqttWebSocketClient(
@@ -388,6 +419,10 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
         client.subscribe(getDeviceTopic(deviceId, 'state'));
         client.subscribe(getDeviceTopic(deviceId, 'command/ack'));
       });
+      // Volver a suscribirse a los tópicos personalizados en caso de reconexión
+      this.customSubscribers.forEach((_, topic) => {
+        client.subscribe(topic);
+      });
       this.client = client;
       this.isConnected = true;
       return true;
@@ -405,6 +440,19 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
 
   private handleMessage(topic: string, payload: string) {
     try {
+      // 1. Notificar a los suscriptores personalizados
+      const subs = this.customSubscribers.get(topic);
+      if (subs) {
+        subs.forEach((callback) => {
+          try {
+            callback(payload);
+          } catch (err) {
+            console.error(`[KrakenMqttAdapter] Error in custom subscriber callback for topic ${topic}`, err);
+          }
+        });
+      }
+
+      // 2. Procesar el estado y acks internos de la máquina
       if (topic === TOPIC_STATE || topic === getDeviceTopic('pumps', 'state')) {
         this.setState(JSON.parse(payload));
         return;

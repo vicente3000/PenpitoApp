@@ -23,9 +23,12 @@ type SettingsRow = {
   ice_dispense_time_s: number;
   auto_clean_enabled: number;
   piscola_price: number;
-  whisky_rocks_price: number;
   negroni_price: number;
-  gin_tonic_price: number;
+  boulevardier_price: number;
+  godfather_price: number;
+  americano_price: number;
+  whisky_rocks_price: number;
+  campari_rocks_price: number;
 };
 
 type MetadataRow = {
@@ -84,11 +87,51 @@ const defaultRecipes: RecipeRow[] = [
   {
     id: 'piscola',
     name: 'Piscola',
-    description: 'Pisco con bebida cola con perfiles suave, normal y fuerte.',
+    description: 'Pisco con Coca-Cola con perfiles suave, normal y fuerte.',
     image_url: null,
-    items: '[{"ingredient_name":"Pisco","amount_ml":88.71},{"ingredient_name":"Bebida Cola","amount_ml":221.78}]',
+    items: '[{"ingredient_name":"Pisco","amount_ml":90.0},{"ingredient_name":"Coca-Cola","amount_ml":225.0}]',
     est_time_seconds: 20,
     abv: 14,
+    is_available: 1,
+  },
+  {
+    id: 'negroni',
+    name: 'Negroni',
+    description: 'Clasico coctel de gin, campari y vermut rosso con 4 hielos.',
+    image_url: null,
+    items: '[{"ingredient_name":"Gin","amount_ml":30.0},{"ingredient_name":"Campari","amount_ml":30.0},{"ingredient_name":"Vermut Rosso","amount_ml":30.0}]',
+    est_time_seconds: 18,
+    abv: 24,
+    is_available: 1,
+  },
+  {
+    id: 'boulevardier',
+    name: 'Boulevardier',
+    description: 'Elegante variacion del Negroni usando Whisky en lugar de Gin.',
+    image_url: null,
+    items: '[{"ingredient_name":"Whisky","amount_ml":30.0},{"ingredient_name":"Campari","amount_ml":30.0},{"ingredient_name":"Vermut Rosso","amount_ml":30.0}]',
+    est_time_seconds: 18,
+    abv: 28,
+    is_available: 1,
+  },
+  {
+    id: 'godfather',
+    name: 'Godfather',
+    description: 'Mezcla clasica de Whisky y Amaretto con 4 hielos.',
+    image_url: null,
+    items: '[{"ingredient_name":"Whisky","amount_ml":60.0},{"ingredient_name":"Amaretto","amount_ml":30.0}]',
+    est_time_seconds: 15,
+    abv: 35,
+    is_available: 1,
+  },
+  {
+    id: 'americano',
+    name: 'Americano',
+    description: 'Suave coctel a base de Campari y Vermut Rosso.',
+    image_url: null,
+    items: '[{"ingredient_name":"Campari","amount_ml":45.0},{"ingredient_name":"Vermut Rosso","amount_ml":45.0}]',
+    est_time_seconds: 15,
+    abv: 12,
     is_available: 1,
   },
   {
@@ -96,29 +139,19 @@ const defaultRecipes: RecipeRow[] = [
     name: 'Whisky a la Roca',
     description: 'Whisky servido con 4 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Whisky","amount_ml":73.93}]',
+    items: '[{"ingredient_name":"Whisky","amount_ml":60.0}]',
     est_time_seconds: 12,
     abv: 40,
     is_available: 1,
   },
   {
-    id: 'negroni',
-    name: 'Negroni',
-    description: 'Clasico coctel de gin, campari y vermut rojo con 4 hielos.',
+    id: 'campari_rocks',
+    name: 'Campari a la Roca',
+    description: 'Campari servido con 4 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Gin","amount_ml":29.57},{"ingredient_name":"Campari","amount_ml":29.57},{"ingredient_name":"Vermut Rojo","amount_ml":29.57}]',
-    est_time_seconds: 18,
-    abv: 24,
-    is_available: 1,
-  },
-  {
-    id: 'gin_tonic',
-    name: 'Gin & Tonic',
-    description: 'Gin con tonica y 4 hielos.',
-    image_url: null,
-    items: '[{"ingredient_name":"Gin","amount_ml":73.93},{"ingredient_name":"Tonica","amount_ml":221.78}]',
-    est_time_seconds: 15,
-    abv: 18,
+    items: '[{"ingredient_name":"Campari","amount_ml":60.0}]',
+    est_time_seconds: 12,
+    abv: 25,
     is_available: 1,
   },
 ];
@@ -129,10 +162,13 @@ const defaultSettings: SettingsRow = {
   dispense_speed_ml_s: 15,
   ice_dispense_time_s: 2,
   auto_clean_enabled: 1,
-  piscola_price: 5500,
-  whisky_rocks_price: 7000,
+  piscola_price: 7000,
   negroni_price: 8000,
-  gin_tonic_price: 7000,
+  boulevardier_price: 8500,
+  godfather_price: 9000,
+  americano_price: 7500,
+  whisky_rocks_price: 8000,
+  campari_rocks_price: 7500,
 };
 
 const defaultInventory: InventoryRow[] = ingredientCatalog.map((ingredient) => ({
@@ -309,9 +345,12 @@ class WebDatabase {
         ice_dispense_time_s: Number(params[3]),
         auto_clean_enabled: Number(params[4]),
         piscola_price: Number(params[5]),
-        whisky_rocks_price: Number(params[6]),
-        negroni_price: Number(params[7]),
-        gin_tonic_price: Number(params[8]),
+        negroni_price: Number(params[6]),
+        boulevardier_price: Number(params[7]),
+        godfather_price: Number(params[8]),
+        americano_price: Number(params[9]),
+        whisky_rocks_price: Number(params[10]),
+        campari_rocks_price: Number(params[11]),
       };
 
       state.settings = state.settings.filter((item) => item.id !== row.id);

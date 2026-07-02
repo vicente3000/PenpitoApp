@@ -45,7 +45,7 @@ export interface MachineState {
 export interface DeviceCommand {
   cmd: string;
   val: string;
-  target?: 'pumps' | 'motor';
+  target?: 'pumps' | 'motor' | 'kraken';
   iceCount?: number;
   alcoholOz?: number;
   mixerOz?: number;
@@ -107,9 +107,12 @@ export interface MachineSettings {
   ice_dispense_time_s: number;
   auto_clean_enabled: boolean;
   piscola_price: number;
-  whisky_rocks_price: number;
   negroni_price: number;
-  gin_tonic_price: number;
+  boulevardier_price: number;
+  godfather_price: number;
+  americano_price: number;
+  whisky_rocks_price: number;
+  campari_rocks_price: number;
 }
 
 export interface SessionGuest {
