@@ -391,11 +391,13 @@ export function AdminScreen({
           variant: 'danger',
           onPress: () => {
             void deviceService.sendCommand({ cmd: 'POWER', val: 'OFF', target: 'kraken' });
-            showCustomDialog(
-              'Detenido',
-              'Comando de parada de emergencia enviado con éxito.',
-              [{ text: 'Aceptar', variant: 'primary' }]
-            );
+            setTimeout(() => {
+              showCustomDialog(
+                'Detenido',
+                'Comando de parada de emergencia enviado con éxito.',
+                [{ text: 'Aceptar', variant: 'primary' }]
+              );
+            }, 500);
           },
         },
       ]

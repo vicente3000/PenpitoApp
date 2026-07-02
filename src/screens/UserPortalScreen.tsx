@@ -155,11 +155,13 @@ export function UserPortalScreen({
           text: 'Pedir Cuenta',
           variant: 'primary',
           onPress: () => {
-            showCustomDialog(
-              'Solicitud enviada',
-              'El garzón va en camino con tu cuenta. ¡Muchas gracias por tu visita!',
-              [{ text: 'Aceptar', variant: 'primary' }]
-            );
+            setTimeout(() => {
+              showCustomDialog(
+                'Solicitud enviada',
+                'El garzón va en camino con tu cuenta. ¡Muchas gracias por tu visita!',
+                [{ text: 'Aceptar', variant: 'primary' }]
+              );
+            }, 500);
           }
         }
       ]

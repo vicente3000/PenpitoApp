@@ -156,9 +156,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingHorizontal: 20,
     paddingTop: 10,
-    position: 'absolute',
-    top: 10,
-    right: 10,
     zIndex: 99,
   },
   bypassTrigger: {

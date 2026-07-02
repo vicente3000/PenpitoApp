@@ -178,9 +178,11 @@ export default function TableRoute() {
             }
 
             setCart([]);
-            showCustomDialog('Pedido enviado', 'Tus tragos han sido agregados a la mesa.', [
-              { text: 'Aceptar', variant: 'primary' }
-            ]);
+            setTimeout(() => {
+              showCustomDialog('Pedido enviado', 'Tus tragos han sido agregados a la mesa.', [
+                { text: 'Aceptar', variant: 'primary' }
+              ]);
+            }, 500);
           },
         },
       ]
