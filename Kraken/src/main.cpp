@@ -8,9 +8,9 @@
 //  CONFIGURACIÓN DE RED Y MQTT
 // ═══════════════════════════════════════════
 // Cambia estas constantes según tu red local y la IP de tu PC con Mosquitto
-const char *WIFI_SSID = "TU_WIFI";
-const char *WIFI_PASSWORD = "TU_CLAVE_WIFI";
-const char *MQTT_HOST = "192.168.1.14"; // IP de la PC donde corre Mosquitto
+const char *WIFI_SSID = "IPhone de Gael";
+const char *WIFI_PASSWORD = "12345678";
+const char *MQTT_HOST = "172.20.10.7"; // IP de la PC donde corre Mosquitto
 const int MQTT_PORT = 1883;
 
 // Tópicos MQTT
@@ -148,6 +148,7 @@ bool is_limit_pressed();
 bool motor_steps(int n);
 void home();
 void mover_a(int target);
+void test_maquina_completa();
 
 const char *statusToString();
 const char *stepToString(PreparationStep step);
@@ -831,6 +832,8 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       } else {
         Serial.println("[SIMULACION] Ejecutando Home...");
       }
+    } else if (type == "full_test") {
+      test_maquina_completa();
     }
     ok = true;
   }
@@ -963,4 +966,84 @@ bool recipeNeedsAgitation(const String &recipeId) {
 
 bool recipeNeedsCarbonation(const String &recipeId) {
   return recipeId == "piscola";
+}
+
+void test_maquina_completa() {
+  Serial.println("Iniciando prueba completa de la maquina...");
+  if (!SIMULAR_MOTOR) {
+    home();
+  } else {
+    Serial.println("[SIMULACION] Ejecutando Home...");
+  }
+
+  Serial.println("Paso 1: Posicion 400 - vaso");
+  mover_a(400);
+  servo_pos(0, 180);
+  delay(1200);
+  servo_pos(0, 90);
+  delay(500);
+
+  Serial.println("Paso 2: Posicion 800 - cuchara");
+  mover_a(800);
+  servo_cont_set(10);
+  delay(3000);
+  servo_cont_set(-10);
+  delay(3000);
+  servo_cont_set(0);
+
+  Serial.println("Paso 3: Posicion 2600 - hielo");
+  mover_a(2600);
+  servo_pos(1, 0);
+  delay(1000);
+  servo_pos(1, 180);
+  delay(1000);
+  servo_pos(1, 0);
+  delay(1000);
+
+  Serial.println("Paso 4: Posicion 1860 - bombas 1 y 2");
+  mover_a(1860);
+  digitalWrite(B_PIN[0], HIGH);
+  digitalWrite(B_PIN[1], HIGH);
+  delay(2000);
+  digitalWrite(B_PIN[0], LOW);
+  digitalWrite(B_PIN[1], LOW);
+
+  Serial.println("Paso 5: Posicion 1600 - bombas 3 y 4");
+  mover_a(1600);
+  digitalWrite(B_PIN[2], HIGH);
+  digitalWrite(B_PIN[3], HIGH);
+  delay(2000);
+  digitalWrite(B_PIN[2], LOW);
+  digitalWrite(B_PIN[3], LOW);
+
+  Serial.println("Paso 6: Posicion 1350 - bombas 5 y 6");
+  mover_a(1400);
+  digitalWrite(B_PIN[4], HIGH);
+  digitalWrite(B_PIN[5], HIGH);
+  delay(2000);
+  digitalWrite(B_PIN[4], LOW);
+  digitalWrite(B_PIN[5], LOW);
+
+  Serial.println("Paso 7: Posicion 1200 - bomba 7");
+  mover_a(1200);
+  digitalWrite(B_PIN[6], HIGH);
+  delay(2000);
+  digitalWrite(B_PIN[6], LOW);
+
+  Serial.println("Paso 8: Posicion 800 - cuchara");
+  mover_a(800);
+  servo_cont_set(10);
+  delay(3000);
+  servo_cont_set(-10);
+  delay(3000);
+  servo_cont_set(0);
+
+  Serial.println("Paso 9: Home final");
+  if (!SIMULAR_MOTOR) {
+    home();
+  } else {
+    Serial.println("[SIMULACION] Ejecutando Home...");
+  }
+
+  Serial.println("Prueba completa terminada.");
 }

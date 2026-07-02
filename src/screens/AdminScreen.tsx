@@ -154,7 +154,7 @@ export function AdminScreen({
   };
 
   const handleSendTestHw = async (payload: {
-    type: 'pump' | 'servo' | 'servo_cont' | 'motor' | 'motor_home';
+    type: 'pump' | 'servo' | 'servo_cont' | 'motor' | 'motor_home' | 'full_test';
     pin?: number;
     val?: number;
     duration?: number;
@@ -868,6 +868,21 @@ export function AdminScreen({
               style={styles.rowBtn}
             />
           </View>
+        </View>
+
+        {/* PRUEBA COMPLETA DE MÁQUINA */}
+        <View style={styles.hwTestBlock}>
+          <Text style={styles.hwBlockTitle}>Prueba de Máquina Completa (MX)</Text>
+          <Text style={styles.sectionText}>Ejecuta la secuencia de diagnóstico completa de forma inalámbrica (vaso, cuchara, hielo, bombas y retorno final a home).</Text>
+          <Button
+            title="Iniciar Secuencia Completa (MX)"
+            variant="primary"
+            size="sm"
+            onPress={() => handleSendTestHw({
+              type: 'full_test'
+            })}
+            style={{ marginTop: 8 }}
+          />
         </View>
       </Card>
 

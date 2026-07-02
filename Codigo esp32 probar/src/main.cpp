@@ -8,7 +8,8 @@
 const int B_PIN[] = {16, 17, 19, 25, 26, 32, 33};
 const int NUM_BOMBAS = 7;
 float b_ml_ps[7] = {0};
-unsigned long pump_stop_time[7] = {0}; // Tiempos de parada de bombas (no bloqueante)
+unsigned long pump_stop_time[7] = {
+    0}; // Tiempos de parada de bombas (no bloqueante)
 
 // SERVOS
 Servo srv_pos[3];
@@ -74,7 +75,9 @@ void setup() {
   pinMode(MOTOR_DIR, OUTPUT);
   digitalWrite(MOTOR_DIR, LOW);
   pinMode(MOTOR_ENABLE, OUTPUT);
-  digitalWrite(MOTOR_ENABLE, HIGH); // Apagado por defecto al iniciar para evitar sobrecalentamiento
+  digitalWrite(
+      MOTOR_ENABLE,
+      HIGH); // Apagado por defecto al iniciar para evitar sobrecalentamiento
   Serial.print(F("Delay motor inicial (us) = "));
   Serial.println(MOTOR_STEP_DELAY_US);
 
@@ -132,55 +135,72 @@ void bombas_off() {
 }
 
 void bomba_pulse_blocking(int n, unsigned long duration_ms) {
-  if (n < 0 || n >= NUM_BOMBAS) return;
+  if (n < 0 || n >= NUM_BOMBAS)
+    return;
   digitalWrite(B_PIN[n], HIGH);
   delay(duration_ms);
   digitalWrite(B_PIN[n], LOW);
 }
 
 void bombas_pulse_blocking(int n1, int n2, unsigned long duration_ms) {
-  if (n1 >= 0 && n1 < NUM_BOMBAS) digitalWrite(B_PIN[n1], HIGH);
-  if (n2 >= 0 && n2 < NUM_BOMBAS) digitalWrite(B_PIN[n2], HIGH);
+  if (n1 >= 0 && n1 < NUM_BOMBAS)
+    digitalWrite(B_PIN[n1], HIGH);
+  if (n2 >= 0 && n2 < NUM_BOMBAS)
+    digitalWrite(B_PIN[n2], HIGH);
   delay(duration_ms);
-  if (n1 >= 0 && n1 < NUM_BOMBAS) digitalWrite(B_PIN[n1], LOW);
-  if (n2 >= 0 && n2 < NUM_BOMBAS) digitalWrite(B_PIN[n2], LOW);
+  if (n1 >= 0 && n1 < NUM_BOMBAS)
+    digitalWrite(B_PIN[n1], LOW);
+  if (n2 >= 0 && n2 < NUM_BOMBAS)
+    digitalWrite(B_PIN[n2], LOW);
 }
 
 void bomba_on(int n, unsigned long duration_ms) {
-  if (n < 0 || n >= NUM_BOMBAS) return;
+  if (n < 0 || n >= NUM_BOMBAS)
+    return;
   digitalWrite(B_PIN[n], HIGH);
   pump_stop_time[n] = millis() + duration_ms;
 }
 
 void calibrar(int n) {
-  Serial.print(F("Iniciando calibracion Bomba ")); Serial.print(n + 1);
+  Serial.print(F("Iniciando calibracion Bomba "));
+  Serial.print(n + 1);
   Serial.println(F(" por 10s..."));
   bomba_on(n, 10000);
 }
 
 void guardar_cal(int n, float ml) {
   b_ml_ps[n] = ml / 10.0;
-  Serial.print(F("Bomba ")); Serial.print(n + 1);
-  Serial.print(F(" calibrada: ")); Serial.print(b_ml_ps[n], 2);
+  Serial.print(F("Bomba "));
+  Serial.print(n + 1);
+  Serial.print(F(" calibrada: "));
+  Serial.print(b_ml_ps[n], 2);
   Serial.println(F(" ml/s"));
 }
 
 void dispensar(int n, float ml) {
   if (b_ml_ps[n] <= 0) {
-    Serial.print(F("Bomba ")); Serial.print(n + 1);
+    Serial.print(F("Bomba "));
+    Serial.print(n + 1);
     Serial.println(F(" no calibrada. Usa bl<n> <ml>"));
     return;
   }
   unsigned long t = (ml / b_ml_ps[n]) * 1000;
-  Serial.print(F("Dispensando ")); Serial.print(ml);
-  Serial.print(F("ml en Bomba ")); Serial.print(n + 1);
-  Serial.print(F(" (")); Serial.print(t); Serial.println(F(" ms)"));
+  Serial.print(F("Dispensando "));
+  Serial.print(ml);
+  Serial.print(F("ml en Bomba "));
+  Serial.print(n + 1);
+  Serial.print(F(" ("));
+  Serial.print(t);
+  Serial.println(F(" ms)"));
   bomba_on(n, t);
 }
 
 void primear(int n, int seg) {
-  Serial.print(F("Primeando Bomba ")); Serial.print(n + 1);
-  Serial.print(F(" por ")); Serial.print(seg); Serial.println(F("s..."));
+  Serial.print(F("Primeando Bomba "));
+  Serial.print(n + 1);
+  Serial.print(F(" por "));
+  Serial.print(seg);
+  Serial.println(F("s..."));
   bomba_on(n, (unsigned long)seg * 1000);
 }
 
@@ -197,8 +217,10 @@ void test_bombas() {
 void servo_pos(int n, int ang) {
   ang = constrain(ang, 0, 180);
   srv_pos[n].write(ang);
-  Serial.print(F("Servo ")); Serial.print(n + 1);
-  Serial.print(F(" -> ")); Serial.println(ang);
+  Serial.print(F("Servo "));
+  Serial.print(n + 1);
+  Serial.print(F(" -> "));
+  Serial.println(ang);
 }
 
 void servo_cont_set(int vel) {
@@ -206,8 +228,11 @@ void servo_cont_set(int vel) {
   int pulse = SRV_CONT_STOP + SRV_CONT_TRIM + map(speed, -100, 100, -90, 90);
   pulse = constrain(pulse, 0, 180);
   srv_cont.write(pulse);
-  Serial.print(F("Servo continuo velocidad=")); Serial.print(speed);
-  Serial.print(F(" (pwm=")); Serial.print(pulse); Serial.println(F(")"));
+  Serial.print(F("Servo continuo velocidad="));
+  Serial.print(speed);
+  Serial.print(F(" (pwm="));
+  Serial.print(pulse);
+  Serial.println(F(")"));
 }
 
 void test_maquina_completa() {
@@ -242,7 +267,7 @@ void test_maquina_completa() {
   mover_a(1600);
   bombas_pulse_blocking(2, 3, 2000);
 
-  Serial.println(F("Paso 6: Posicion 1400 - bombas 5 y 6"));
+  Serial.println(F("Paso 6: Posicion 1350 - bombas 5 y 6"));
   mover_a(1400);
   bombas_pulse_blocking(4, 5, 2000);
 
@@ -278,7 +303,8 @@ void motor_step() {
   digitalWrite(MOTOR_STEP, HIGH);
   delayMicroseconds(5);
   digitalWrite(MOTOR_STEP, LOW);
-  delayMicroseconds(MOTOR_STEP_DELAY_US); // Baja la velocidad para evitar que la GT2 patine
+  delayMicroseconds(
+      MOTOR_STEP_DELAY_US); // Baja la velocidad para evitar que la GT2 patine
 }
 
 bool is_limit_pressed() {
@@ -290,12 +316,13 @@ bool is_limit_pressed() {
 }
 
 bool motor_steps(int n) {
-  if (n == 0) return true;
+  if (n == 0)
+    return true;
 
   // Control físico de dirección
   digitalWrite(MOTOR_DIR, (n > 0) ? HIGH : LOW);
   digitalWrite(MOTOR_ENABLE, LOW); // Enciende las bobinas del motor
-  delayMicroseconds(10); // Tiempo de establecimiento
+  delayMicroseconds(10);           // Tiempo de establecimiento
 
   bool completed = true;
   for (int i = 0; i < abs(n); i++) {
@@ -309,8 +336,9 @@ bool motor_steps(int n) {
     motor_pos += (n > 0) ? 1 : -1;
   }
 
-  // Dejamos el motor habilitado al finalizar el movimiento para sostener posición.
-  // Se apagará si se ejecuta parada de emergencia (ms) o apagado general (0).
+  // Dejamos el motor habilitado al finalizar el movimiento para sostener
+  // posición. Se apagará si se ejecuta parada de emergencia (ms) o apagado
+  // general (0).
   return completed;
 }
 
@@ -367,9 +395,12 @@ void home() {
 
 void mover_a(int target) {
   int diff = target - motor_pos;
-  Serial.print(F("Moviendo a posicion ")); Serial.print(target);
-  Serial.print(F(" (")); Serial.print(diff); Serial.println(F(" pasos)"));
-  
+  Serial.print(F("Moviendo a posicion "));
+  Serial.print(target);
+  Serial.print(F(" ("));
+  Serial.print(diff);
+  Serial.println(F(" pasos)"));
+
   if (motor_steps(diff)) {
     Serial.println(F("Movimiento OK"));
   } else {
@@ -389,7 +420,9 @@ void loop() {
       if (now >= pump_stop_time[i]) {
         digitalWrite(B_PIN[i], LOW);
         pump_stop_time[i] = 0;
-        Serial.print(F("Bomba ")); Serial.print(i + 1); Serial.println(F(" terminada."));
+        Serial.print(F("Bomba "));
+        Serial.print(i + 1);
+        Serial.println(F(" terminada."));
       }
     }
   }
@@ -402,7 +435,8 @@ void loop() {
         digitalWrite(B_PIN[test_active_pump], HIGH);
         test_pump_running = true;
         test_next_action_time = now + 1000; // Corre por 1 segundo
-        Serial.print(F("Probando Bomba ")); Serial.println(test_active_pump + 1);
+        Serial.print(F("Probando Bomba "));
+        Serial.println(test_active_pump + 1);
       } else {
         // Apaga la bomba actual
         digitalWrite(B_PIN[test_active_pump], LOW);
@@ -412,23 +446,27 @@ void loop() {
           test_active_pump = -1; // Fin del test
           Serial.println(F("Test de Bombas Finalizado."));
         } else {
-          test_next_action_time = now + 300; // Espera 300ms de descanso antes de la siguiente
+          test_next_action_time =
+              now + 300; // Espera 300ms de descanso antes de la siguiente
         }
       }
     }
   }
 
   // 3. Procesamiento de Comandos Seriales
-  if (!Serial.available()) return;
+  if (!Serial.available())
+    return;
 
   String c = Serial.readStringUntil('\n');
   c.trim();
-  if (c.length() == 0) return;
+  if (c.length() == 0)
+    return;
 
   char p = c[0];
 
-  if (p == '?') { help(); }
-  else if (p == '0') {
+  if (p == '?') {
+    help();
+  } else if (p == '0') {
     bombas_off();
     motor_stop();
     servo_cont_set(0);
@@ -437,25 +475,25 @@ void loop() {
 
   // ── BOMBAS ──
   else if (p == 'b') {
-    if (c.length() < 2) return;
+    if (c.length() < 2)
+      return;
     char s = c[1];
 
     if (s == 't') {
       test_bombas();
-    }
-    else if (s == 'c') {
+    } else if (s == 'c') {
       int n = c.substring(2).toInt() - 1;
-      if (n >= 0 && n < NUM_BOMBAS) calibrar(n);
-    }
-    else if (s == 'l') {
+      if (n >= 0 && n < NUM_BOMBAS)
+        calibrar(n);
+    } else if (s == 'l') {
       int sp = c.indexOf(' ', 2);
       if (sp > 0) {
         int n = c.substring(2, sp).toInt() - 1;
         float ml = c.substring(sp + 1).toFloat();
-        if (n >= 0 && n < NUM_BOMBAS && ml > 0) guardar_cal(n, ml);
+        if (n >= 0 && n < NUM_BOMBAS && ml > 0)
+          guardar_cal(n, ml);
       }
-    }
-    else if (s == 'p') {
+    } else if (s == 'p') {
       int sp = c.indexOf(' ', 2);
       int n, seg = 5;
       if (sp > 0) {
@@ -464,11 +502,12 @@ void loop() {
       } else {
         n = c.substring(2).toInt() - 1;
       }
-      if (n >= 0 && n < NUM_BOMBAS) primear(n, seg);
-    }
-    else {
+      if (n >= 0 && n < NUM_BOMBAS)
+        primear(n, seg);
+    } else {
       int n = c.substring(1).toInt() - 1;
-      if (n >= 0 && n < NUM_BOMBAS) dispensar(n, 30);
+      if (n >= 0 && n < NUM_BOMBAS)
+        dispensar(n, 30);
     }
   }
 
@@ -482,35 +521,32 @@ void loop() {
       if (sp > 0) {
         int n = c.substring(1, sp).toInt() - 1;
         int ang = c.substring(sp + 1).toInt();
-        if (n >= 0 && n < 3) servo_pos(n, ang);
+        if (n >= 0 && n < 3)
+          servo_pos(n, ang);
       }
     }
   }
 
   // ── MOTOR ──
   else if (p == 'm') {
-    if (c.length() < 2) return;
+    if (c.length() < 2)
+      return;
     char s = c[1];
 
     if (s == 's') {
       motor_stop();
       Serial.println(F("Motor Detenido (Sin energía)"));
-    }
-    else if (s == 'h') {
+    } else if (s == 'h') {
       home();
-    }
-    else if (s == 'x') {
+    } else if (s == 'x') {
       test_maquina_completa();
-    }
-    else if (s == 'r') {
+    } else if (s == 'r') {
       int steps = c.substring(2).toInt();
       mover_a(motor_pos + steps);
-    }
-    else if (s == 'p') {
+    } else if (s == 'p') {
       int pos = c.substring(2).toInt();
       mover_a(pos);
-    }
-    else if (s == 't') {
+    } else if (s == 't') {
       unsigned int new_delay = c.substring(2).toInt();
       if (new_delay >= 200) {
         MOTOR_STEP_DELAY_US = new_delay;
