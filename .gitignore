@@ -44,3 +44,6 @@ yarn-error.*
 /firmware/build/
 /firmware/sdkconfig
 /firmware/dependencies.lock
+/.agents
+/Kraken/.cache
+.env

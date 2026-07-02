@@ -15,7 +15,7 @@ export {
 } from 'expo-router';
 
 export const unstable_settings = {
-  initialRouteName: '(tabs)',
+  initialRouteName: 'index',
 };
 
 SplashScreen.preventAutoHideAsync();
@@ -88,10 +88,12 @@ function RootLayoutNav({ initError }: { initError: string | null }) {
   return (
     <ThemeProvider value={navigationTheme}>
       <AppBootstrap />
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="mesa/[tableNumber]" />
+        <Stack.Screen name="waiter" />
+        <Stack.Screen name="admin" />
+        <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true }} />
       </Stack>
       {initError ? (
         <View

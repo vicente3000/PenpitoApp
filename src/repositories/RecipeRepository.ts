@@ -13,6 +13,7 @@ export class RecipeRepository {
       est_time_seconds: number;
       abv: number | null;
       is_available: number;
+      price: number;
     }>('SELECT * FROM recipes');
 
     return results.map(r => ({
@@ -24,6 +25,7 @@ export class RecipeRepository {
       est_time_seconds: r.est_time_seconds,
       abv: r.abv || undefined,
       is_available: r.is_available === 1,
+      price: r.price,
     }));
   }
 
@@ -38,6 +40,7 @@ export class RecipeRepository {
       est_time_seconds: number;
       abv: number | null;
       is_available: number;
+      price: number;
     }>('SELECT * FROM recipes WHERE id = ?', [id]);
 
     if (!result) return null;
@@ -51,14 +54,15 @@ export class RecipeRepository {
       est_time_seconds: result.est_time_seconds,
       abv: result.abv || undefined,
       is_available: result.is_available === 1,
+      price: result.price,
     };
   }
 
   async saveRecipe(recipe: Recipe): Promise<void> {
     const db = await getDb();
     await db.runAsync(
-      `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         recipe.id,
         recipe.name,
@@ -67,7 +71,8 @@ export class RecipeRepository {
         JSON.stringify(recipe.items),
         recipe.est_time_seconds,
         recipe.abv || null,
-        recipe.is_available ? 1 : 0
+        recipe.is_available ? 1 : 0,
+        recipe.price
       ]
     );
   }

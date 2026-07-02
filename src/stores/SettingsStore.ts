@@ -25,13 +25,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           dispense_speed_ml_s: 15,
           ice_dispense_time_s: 2,
           auto_clean_enabled: true,
-          piscola_price: 7000,
-          negroni_price: 8000,
-          boulevardier_price: 8500,
-          godfather_price: 9000,
-          americano_price: 7500,
-          whisky_rocks_price: 8000,
-          campari_rocks_price: 7500,
         };
         await settingsRepository.saveSettings(currentSettings);
       }

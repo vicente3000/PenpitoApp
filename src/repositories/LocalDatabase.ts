@@ -7,7 +7,7 @@ import {
 } from '../utils/drinkConfig';
 
 const DB_NAME = 'penpito.db';
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const DEFAULT_SETTINGS_ID = 'default';
 
 type DbHandle = Awaited<ReturnType<typeof SQLite.openDatabaseAsync>>;
@@ -16,7 +16,7 @@ let dbPromise: Promise<DbHandle> | null = null;
 let initPromise: Promise<void> | null = null;
 
 const recipeSeedStatements = [
-  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'piscola',
      'Piscola',
@@ -25,9 +25,10 @@ const recipeSeedStatements = [
      '[{"ingredient_name":"Pisco","amount_ml":90.0},{"ingredient_name":"Coca-Cola","amount_ml":225.0}]',
      20,
      14,
-     1
+     1,
+     7000
    )`,
-  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'negroni',
      'Negroni',
@@ -36,9 +37,10 @@ const recipeSeedStatements = [
      '[{"ingredient_name":"Gin","amount_ml":30.0},{"ingredient_name":"Campari","amount_ml":30.0},{"ingredient_name":"Vermut Rosso","amount_ml":30.0}]',
      18,
      24,
-     1
+     1,
+     8000
    )`,
-  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'boulevardier',
      'Boulevardier',
@@ -47,9 +49,10 @@ const recipeSeedStatements = [
      '[{"ingredient_name":"Whisky","amount_ml":30.0},{"ingredient_name":"Campari","amount_ml":30.0},{"ingredient_name":"Vermut Rosso","amount_ml":30.0}]',
      18,
      28,
-     1
+     1,
+     8500
    )`,
-  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'godfather',
      'Godfather',
@@ -58,9 +61,10 @@ const recipeSeedStatements = [
      '[{"ingredient_name":"Whisky","amount_ml":60.0},{"ingredient_name":"Amaretto","amount_ml":30.0}]',
      15,
      35,
-     1
+     1,
+     9000
    )`,
-  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'americano',
      'Americano',
@@ -69,9 +73,10 @@ const recipeSeedStatements = [
      '[{"ingredient_name":"Campari","amount_ml":45.0},{"ingredient_name":"Vermut Rosso","amount_ml":45.0}]',
      15,
      12,
-     1
+     1,
+     7500
    )`,
-  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'whisky_rocks',
      'Whisky a la Roca',
@@ -80,9 +85,10 @@ const recipeSeedStatements = [
      '[{"ingredient_name":"Whisky","amount_ml":60.0}]',
      12,
      40,
-     1
+     1,
+     8000
    )`,
-  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available)
+  `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'campari_rocks',
      'Campari a la Roca',
@@ -91,7 +97,8 @@ const recipeSeedStatements = [
      '[{"ingredient_name":"Campari","amount_ml":60.0}]',
      12,
      25,
-     1
+     1,
+     7500
    )`,
 ];
 
@@ -141,7 +148,8 @@ async function applySchema(db: DbHandle) {
       items TEXT NOT NULL,
       est_time_seconds INTEGER NOT NULL,
       abv REAL,
-      is_available INTEGER NOT NULL
+      is_available INTEGER NOT NULL,
+      price INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -149,14 +157,7 @@ async function applySchema(db: DbHandle) {
       bottle_capacity_ml INTEGER NOT NULL,
       dispense_speed_ml_s REAL NOT NULL,
       ice_dispense_time_s INTEGER NOT NULL,
-      auto_clean_enabled INTEGER NOT NULL,
-      piscola_price INTEGER NOT NULL DEFAULT 7000,
-      negroni_price INTEGER NOT NULL DEFAULT 8000,
-      boulevardier_price INTEGER NOT NULL DEFAULT 8500,
-      godfather_price INTEGER NOT NULL DEFAULT 9000,
-      americano_price INTEGER NOT NULL DEFAULT 7500,
-      whisky_rocks_price INTEGER NOT NULL DEFAULT 8000,
-      campari_rocks_price INTEGER NOT NULL DEFAULT 7500
+      auto_clean_enabled INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS inventory (
@@ -215,20 +216,7 @@ async function ensureOrderColumns(db: DbHandle) {
 }
 
 async function ensureSettingsColumns(db: DbHandle) {
-  const alterStatements = [
-    `ALTER TABLE settings ADD COLUMN piscola_price INTEGER NOT NULL DEFAULT 5500`,
-    `ALTER TABLE settings ADD COLUMN whisky_rocks_price INTEGER NOT NULL DEFAULT 7000`,
-    `ALTER TABLE settings ADD COLUMN negroni_price INTEGER NOT NULL DEFAULT 8000`,
-    `ALTER TABLE settings ADD COLUMN gin_tonic_price INTEGER NOT NULL DEFAULT 7000`,
-  ];
-
-  for (const statement of alterStatements) {
-    try {
-      await db.execAsync(statement);
-    } catch {
-      // Column already exists in previously migrated databases.
-    }
-  }
+  // Price columns are no longer needed on settings table.
 }
 
 async function ensureInventoryColumns(db: DbHandle) {
@@ -285,13 +273,9 @@ async function seedSettings(db: DbHandle) {
       bottle_capacity_ml,
       dispense_speed_ml_s,
       ice_dispense_time_s,
-      auto_clean_enabled,
-      piscola_price,
-      whisky_rocks_price,
-      negroni_price,
-      gin_tonic_price
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [DEFAULT_SETTINGS_ID, DEFAULT_BOTTLE_CAPACITY_ML, 15, 2, 1, 5500, 7000, 8000, 7000]
+      auto_clean_enabled
+    ) VALUES (?, ?, ?, ?, ?)`,
+    [DEFAULT_SETTINGS_ID, DEFAULT_BOTTLE_CAPACITY_ML, 15, 2, 1]
   );
 }
 
@@ -311,6 +295,62 @@ async function markSchemaVersion(db: DbHandle) {
 async function performInit() {
   const db = await openDb();
   console.log('[LocalDatabase] Opening database');
+
+  let currentVersion = 0;
+  try {
+    const verRow = await db.getFirstAsync<{ value: string }>(
+      'SELECT value FROM app_metadata WHERE key = ?',
+      ['schema_version']
+    );
+    if (verRow) {
+      currentVersion = parseInt(verRow.value, 10);
+    }
+  } catch {
+    // metadata or table doesn't exist yet
+  }
+
+  if (currentVersion > 0 && currentVersion < SCHEMA_VERSION) {
+    console.log(`[LocalDatabase] Migrating from version ${currentVersion} to ${SCHEMA_VERSION}`);
+    if (currentVersion < 7) {
+      try {
+        await db.execAsync(`ALTER TABLE recipes ADD COLUMN price INTEGER NOT NULL DEFAULT 0`);
+      } catch (e) {
+        console.log('[LocalDatabase] Alter recipes price failed:', e);
+      }
+
+      try {
+        await db.execAsync(`
+          UPDATE recipes SET price = COALESCE((SELECT piscola_price FROM settings WHERE id = 'default'), 7000) WHERE id = 'piscola';
+          UPDATE recipes SET price = COALESCE((SELECT negroni_price FROM settings WHERE id = 'default'), 8000) WHERE id = 'negroni';
+          UPDATE recipes SET price = COALESCE((SELECT boulevardier_price FROM settings WHERE id = 'default'), 8500) WHERE id = 'boulevardier';
+          UPDATE recipes SET price = COALESCE((SELECT godfather_price FROM settings WHERE id = 'default'), 9000) WHERE id = 'godfather';
+          UPDATE recipes SET price = COALESCE((SELECT americano_price FROM settings WHERE id = 'default'), 7500) WHERE id = 'americano';
+          UPDATE recipes SET price = COALESCE((SELECT whisky_rocks_price FROM settings WHERE id = 'default'), 8000) WHERE id = 'whisky_rocks';
+          UPDATE recipes SET price = COALESCE((SELECT campari_rocks_price FROM settings WHERE id = 'default'), 7500) WHERE id = 'campari_rocks';
+        `);
+      } catch (e) {
+        console.log('[LocalDatabase] Migrate recipe prices failed:', e);
+      }
+
+      try {
+        await db.execAsync(`
+          CREATE TABLE IF NOT EXISTS settings_new (
+            id TEXT PRIMARY KEY NOT NULL,
+            bottle_capacity_ml INTEGER NOT NULL,
+            dispense_speed_ml_s REAL NOT NULL,
+            ice_dispense_time_s INTEGER NOT NULL,
+            auto_clean_enabled INTEGER NOT NULL
+          );
+          INSERT OR IGNORE INTO settings_new (id, bottle_capacity_ml, dispense_speed_ml_s, ice_dispense_time_s, auto_clean_enabled)
+          SELECT id, bottle_capacity_ml, dispense_speed_ml_s, ice_dispense_time_s, auto_clean_enabled FROM settings;
+          DROP TABLE settings;
+          ALTER TABLE settings_new RENAME TO settings;
+        `);
+      } catch (e) {
+        console.log('[LocalDatabase] Clean settings table failed:', e);
+      }
+    }
+  }
 
   await applySchema(db);
   await ensureOrderColumns(db);

@@ -129,12 +129,12 @@ const styles = StyleSheet.create({
   },
   cardActive: {
     borderColor: Colors.primary,
-    backgroundColor: '#e2efec',
+    backgroundColor: Colors.primaryGlow,
     ...Shadows.glowPrimary,
   },
   cardDone: {
-    borderColor: '#b7d9c4',
-    backgroundColor: '#edf7f0',
+    borderColor: Colors.success,
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
   },
   cardSkipped: {
     opacity: 0.7,
@@ -147,7 +147,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: Colors.primary,
-    backgroundColor: '#e6f1ef',
+    backgroundColor: Colors.surfaceHighlight,
     marginRight: 12,
   },
   iconWrapActive: {

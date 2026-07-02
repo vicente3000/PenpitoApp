@@ -14,6 +14,7 @@ type RecipeRow = {
   est_time_seconds: number;
   abv: number | null;
   is_available: number;
+  price: number;
 };
 
 type SettingsRow = {
@@ -22,13 +23,6 @@ type SettingsRow = {
   dispense_speed_ml_s: number;
   ice_dispense_time_s: number;
   auto_clean_enabled: number;
-  piscola_price: number;
-  negroni_price: number;
-  boulevardier_price: number;
-  godfather_price: number;
-  americano_price: number;
-  whisky_rocks_price: number;
-  campari_rocks_price: number;
 };
 
 type MetadataRow = {
@@ -93,6 +87,7 @@ const defaultRecipes: RecipeRow[] = [
     est_time_seconds: 20,
     abv: 14,
     is_available: 1,
+    price: 7000,
   },
   {
     id: 'negroni',
@@ -103,6 +98,7 @@ const defaultRecipes: RecipeRow[] = [
     est_time_seconds: 18,
     abv: 24,
     is_available: 1,
+    price: 8000,
   },
   {
     id: 'boulevardier',
@@ -113,6 +109,7 @@ const defaultRecipes: RecipeRow[] = [
     est_time_seconds: 18,
     abv: 28,
     is_available: 1,
+    price: 8500,
   },
   {
     id: 'godfather',
@@ -123,6 +120,7 @@ const defaultRecipes: RecipeRow[] = [
     est_time_seconds: 15,
     abv: 35,
     is_available: 1,
+    price: 9000,
   },
   {
     id: 'americano',
@@ -133,6 +131,7 @@ const defaultRecipes: RecipeRow[] = [
     est_time_seconds: 15,
     abv: 12,
     is_available: 1,
+    price: 7500,
   },
   {
     id: 'whisky_rocks',
@@ -143,6 +142,7 @@ const defaultRecipes: RecipeRow[] = [
     est_time_seconds: 12,
     abv: 40,
     is_available: 1,
+    price: 8000,
   },
   {
     id: 'campari_rocks',
@@ -153,6 +153,7 @@ const defaultRecipes: RecipeRow[] = [
     est_time_seconds: 12,
     abv: 25,
     is_available: 1,
+    price: 7500,
   },
 ];
 
@@ -162,13 +163,6 @@ const defaultSettings: SettingsRow = {
   dispense_speed_ml_s: 15,
   ice_dispense_time_s: 2,
   auto_clean_enabled: 1,
-  piscola_price: 7000,
-  negroni_price: 8000,
-  boulevardier_price: 8500,
-  godfather_price: 9000,
-  americano_price: 7500,
-  whisky_rocks_price: 8000,
-  campari_rocks_price: 7500,
 };
 
 const defaultInventory: InventoryRow[] = ingredientCatalog.map((ingredient) => ({
@@ -329,6 +323,7 @@ class WebDatabase {
         est_time_seconds: Number(params[5]),
         abv: params[6] == null ? null : Number(params[6]),
         is_available: Number(params[7]),
+        price: params[8] == null ? 0 : Number(params[8]),
       };
 
       state.recipes = state.recipes.filter((recipe) => recipe.id !== row.id);
@@ -344,13 +339,6 @@ class WebDatabase {
         dispense_speed_ml_s: Number(params[2]),
         ice_dispense_time_s: Number(params[3]),
         auto_clean_enabled: Number(params[4]),
-        piscola_price: Number(params[5]),
-        negroni_price: Number(params[6]),
-        boulevardier_price: Number(params[7]),
-        godfather_price: Number(params[8]),
-        americano_price: Number(params[9]),
-        whisky_rocks_price: Number(params[10]),
-        campari_rocks_price: Number(params[11]),
       };
 
       state.settings = state.settings.filter((item) => item.id !== row.id);
@@ -457,7 +445,7 @@ export const initDb = async () => {
           state.settings.length > 0
             ? state.settings.filter((item) => item.id === DEFAULT_SETTINGS_ID)
             : [{ ...defaultSettings }],
-        metadata: [{ key: 'schema_version', value: '6' }],
+        metadata: [{ key: 'schema_version', value: '7' }],
         inventory: (() => {
           const existing = state.inventory?.filter((item) => item.id !== 'vermut_seco') ?? [];
 

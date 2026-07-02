@@ -8,6 +8,7 @@ interface RecipeState {
   error: string | null;
   loadRecipes: () => Promise<void>;
   addRecipe: (recipe: Recipe) => Promise<void>;
+  updateRecipePrice: (id: string, price: number) => Promise<void>;
 }
 
 export const useRecipeStore = create<RecipeState>((set, get) => ({
@@ -29,6 +30,19 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
       await get().loadRecipes();
     } catch (error) {
       set({ error: 'Failed to save recipe' });
+    }
+  },
+  updateRecipePrice: async (id: string, price: number) => {
+    try {
+      const recipes = get().recipes;
+      const recipe = recipes.find(r => r.id === id);
+      if (recipe) {
+        const updated = { ...recipe, price };
+        await recipeRepository.saveRecipe(updated);
+        await get().loadRecipes();
+      }
+    } catch (error) {
+      set({ error: 'Failed to update recipe price' });
     }
   }
 }));

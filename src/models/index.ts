@@ -12,6 +12,7 @@ export interface Recipe {
   est_time_seconds: number;
   abv?: number;
   is_available: boolean;
+  price: number;
 }
 
 export interface BottleInventory {
@@ -106,13 +107,6 @@ export interface MachineSettings {
   dispense_speed_ml_s: number;
   ice_dispense_time_s: number;
   auto_clean_enabled: boolean;
-  piscola_price: number;
-  negroni_price: number;
-  boulevardier_price: number;
-  godfather_price: number;
-  americano_price: number;
-  whisky_rocks_price: number;
-  campari_rocks_price: number;
 }
 
 export interface SessionGuest {

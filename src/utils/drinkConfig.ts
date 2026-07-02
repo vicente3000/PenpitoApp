@@ -54,6 +54,10 @@ export function formatMl(value: number) {
   return `${Math.round(value).toLocaleString('es-CL')} ml`;
 }
 
+export function formatCurrency(amount: number) {
+  return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(amount);
+}
+
 export function getDefaultIceCount(recipeId: string, intensity: PiscolaIntensity = 'normal') {
   if (recipeId === 'piscola') {
     return piscolaProfiles[intensity].defaultIceCount;
@@ -158,4 +162,29 @@ export function getRecipeServingsCount(
   });
 
   return Math.max(0, Math.min(...servings));
+}
+
+export function getRecipeDefaultOptions(recipe: Recipe, intensity: PiscolaIntensity = 'normal'): DrinkPreparationOptions {
+  if (recipe.id !== 'piscola') {
+    return {
+      iceCount: getDefaultIceCount(recipe.id),
+    };
+  }
+
+  const profile = piscolaProfiles[intensity];
+  return {
+    iceCount: profile.defaultIceCount,
+    alcoholOz: profile.alcoholOz,
+    mixerOz: profile.mixerOz,
+    piscolaIntensity: intensity,
+  };
+}
+
+export function buildCartItemLabel(recipe: Recipe, options: DrinkPreparationOptions) {
+  if (recipe.id !== 'piscola') {
+    return recipe.name;
+  }
+
+  const intensity = options.piscolaIntensity ?? 'normal';
+  return `${recipe.name} ${piscolaProfiles[intensity].label}`;
 }
