@@ -248,41 +248,17 @@ export function WaiterScreen({
                 <View style={styles.billRequestedBanner}>
                   <View style={styles.billRequestedLeft}>
                     <FontAwesome name="bell" size={16} color="#c46a4a" />
-                    <Text style={styles.billRequestedText}>Solicita la Cuenta</Text>
+                    <Text style={styles.billRequestedText}>Esta mesa solicita la cuenta</Text>
                   </View>
-                  <Button
-                    title="Cobrar Mesa"
-                    variant="primary"
-                    size="sm"
-                    onPress={() => handleCobrarMesa(table)}
-                    style={styles.cobrarBtn}
-                  />
                 </View>
               )}
               <View style={styles.tableHeader}>
                 <Text style={styles.tableTitle as any}>{formatTableLabel(table.tableNumber)}</Text>
                 <Button
-                  title="Limpiar Mesa"
-                  variant="outline"
+                  title="Cobrar Mesa"
+                  variant="primary"
                   size="sm"
-                  disabled={table.orders.some((order) => ['queued', 'preparing', 'ready'].includes(order.status))}
-                  onPress={() => {
-                    showCustomDialog(
-                      'Limpiar Mesa',
-                      `¿Estás seguro de que deseas cerrar la sesión y borrar las comandas de la ${formatTableLabel(table.tableNumber)}?`,
-                      [
-                        { text: 'Cancelar', variant: 'outline' },
-                        {
-                          text: 'Limpiar',
-                          variant: 'danger',
-                          onPress: () => {
-                            clearTableOrders(table.tableNumber);
-                            clearTableSession(table.tableNumber);
-                          },
-                        },
-                      ]
-                    );
-                  }}
+                  onPress={() => handleCobrarMesa(table)}
                   style={styles.cleanBtn}
                 />
               </View>
