@@ -188,38 +188,7 @@ export default function TableRoute() {
   };
 
   const handleResetAccess = () => {
-    const activeTableOrders = orders.filter(
-      (order) => order.table_number === tableNumber && order.status !== 'failed'
-    );
-
-    if (activeTableOrders.length === 0) {
-      router.replace('/' as any);
-      return;
-    }
-
-    if (activeTableOrders.every((order) => order.status === 'queued')) {
-      showCustomDialog(
-        'Pedido pendiente',
-        'No puedes salir de esta mesa mientras haya pedidos en cola. Cancela los pedidos primero.',
-        [{ text: 'Aceptar', variant: 'primary' }]
-      );
-      return;
-    }
-
-    if (activeTableOrders.some((order) => order.status === 'served')) {
-      showCustomDialog(
-        'Pedido servido',
-        'No puedes salir de esta mesa porque ya hay tragos servidos. Pide ayuda a un mesero para liberar la mesa.',
-        [{ text: 'Aceptar', variant: 'primary' }]
-      );
-      return;
-    }
-
-    showCustomDialog(
-      'Pedido en curso',
-      'No puedes salir de esta mesa porque hay pedidos en preparación. Habla con un mesero.',
-      [{ text: 'Aceptar', variant: 'primary' }]
-    );
+    router.replace('/' as any);
   };
 
   return (

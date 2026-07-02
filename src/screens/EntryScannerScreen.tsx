@@ -25,23 +25,7 @@ export function EntryScannerScreen({ onResolved }: EntryScannerScreenProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scannerPaused, setScannerPaused] = useState(false);
   const [scanError, setScanError] = useState('');
-  const [showSim, setShowSim] = useState(__DEV__);
-  const logoTaps = useRef(0);
-  const lastTapTime = useRef(0);
-
-  const handleLogoPress = () => {
-    const now = Date.now();
-    if (now - lastTapTime.current < 400) {
-      logoTaps.current += 1;
-      if (logoTaps.current >= 3) {
-        setShowSim(prev => !prev);
-        logoTaps.current = 0;
-      }
-    } else {
-      logoTaps.current = 1;
-    }
-    lastTapTime.current = now;
-  };
+  const [showSim, setShowSim] = useState(false);
 
   const resolveRawValue = (value: string) => {
     const parsed = parseAccessQr(value);
@@ -57,14 +41,27 @@ export function EntryScannerScreen({ onResolved }: EntryScannerScreenProps) {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <View style={styles.headerRow}>
+        <Pressable
+          style={styles.bypassTrigger}
+          onPress={() => setShowSim(prev => !prev)}
+        >
+          <FontAwesome
+            name="cog"
+            size={18}
+            color={showSim ? Colors.primary : Colors.textMuted}
+            style={{ opacity: 0.3 }}
+          />
+        </Pressable>
+      </View>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Pressable onPress={handleLogoPress} style={styles.heroCard}>
+        <View style={styles.heroCard}>
           <Image
             source={require('../../assets/images/penpito-logo.png')}
             style={styles.heroLogo}
             resizeMode="contain"
           />
-        </Pressable>
+        </View>
 
         <Card style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Escanea el QR de acceso</Text>
@@ -153,6 +150,19 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    zIndex: 99,
+  },
+  bypassTrigger: {
+    padding: 10,
   },
   scrollContent: {
     padding: 20,

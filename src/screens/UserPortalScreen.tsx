@@ -294,46 +294,61 @@ export function UserPortalScreen({
             )}
           </Card>
 
-          {/* Selector de perfil de Piscola */}
-          <Card style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>¿Cómo prefieres tu Piscola? 🇨🇱</Text>
-            <Text style={styles.sectionText}>
-              Selecciona la intensidad. Afectará a todas las piscolas que agregues a tu pedido:
-            </Text>
-            <View style={styles.intensityRow}>
-              {(Object.keys(piscolaProfiles) as PiscolaIntensity[]).map((level) => (
-                <Pressable
-                  key={level}
-                  style={[
-                    styles.intensityChip,
-                    piscolaIntensity === level && styles.intensityChipActive,
-                  ]}
-                  onPress={() => setPiscolaIntensity(level)}
-                >
-                  <Text
-                    style={[
-                      styles.intensityChipText,
-                      piscolaIntensity === level && styles.intensityChipTextActive,
-                    ]}
-                  >
-                    {piscolaProfiles[level].label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </Card>
-
           <Card style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>Carta de Coctelería</Text>
             <Text style={styles.sectionText}>
-              Presiona cualquier trago para agregarlo directamente al pedido:
+              Presiona cualquier trago para agregarlo directamente a tu pedido:
             </Text>
             <DrinkGrid
               recipes={recipes}
-              onSelectRecipe={(recipe) => onAddCartItem(recipe, 1)}
+              onSelectRecipe={(recipe) => {
+                if (recipe.id === 'piscola') {
+                  onSelectRecipe(recipe);
+                } else {
+                  onSelectRecipe(null);
+                  onAddCartItem(recipe, 1);
+                }
+              }}
               recipeAvailability={recipeAvailability}
-              selectedRecipeId={null}
+              selectedRecipeId={selectedRecipe?.id}
             />
+
+            {selectedRecipe?.id === 'piscola' && (
+              <View style={styles.recipeConfigContainer}>
+                <Text style={styles.configSubtitle}>¿Cómo prefieres tu Piscola?</Text>
+                <Text style={styles.configLabel}>Selecciona la intensidad de la combinación:</Text>
+                <View style={styles.intensityRow}>
+                  {(Object.keys(piscolaProfiles) as PiscolaIntensity[]).map((level) => (
+                    <Pressable
+                      key={level}
+                      style={[
+                        styles.intensityChip,
+                        piscolaIntensity === level && styles.intensityChipActive,
+                      ]}
+                      onPress={() => setPiscolaIntensity(level)}
+                    >
+                      <Text
+                        style={[
+                          styles.intensityChipText,
+                          piscolaIntensity === level && styles.intensityChipTextActive,
+                        ]}
+                      >
+                        {piscolaProfiles[level].label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <Button
+                  title="Agregar Piscola al carrito"
+                  variant="primary"
+                  onPress={() => {
+                    onAddCartItem(selectedRecipe, 1);
+                    onSelectRecipe(null);
+                  }}
+                  style={styles.addCartBtn}
+                />
+              </View>
+            )}
           </Card>
 
           <Card style={styles.sectionCard}>
