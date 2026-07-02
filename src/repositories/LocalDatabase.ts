@@ -79,8 +79,8 @@ const recipeSeedStatements = [
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'whisky_rocks',
-     'Whisky a la Roca',
-     'Whisky servido con 4 hielos.',
+     'Whisky a las Rocas',
+     'Whisky premium servido a las rocas con hielo.',
      NULL,
      '[{"ingredient_name":"Whisky","amount_ml":60.0}]',
      12,
@@ -91,8 +91,8 @@ const recipeSeedStatements = [
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
      'campari_rocks',
-     'Campari a la Roca',
-     'Campari servido con 4 hielos.',
+     'Campari a las Rocas',
+     'Campari refrescante servido a las rocas con hielo.',
      NULL,
      '[{"ingredient_name":"Campari","amount_ml":60.0}]',
      12,

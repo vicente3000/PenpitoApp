@@ -99,6 +99,15 @@ export default function TableRoute() {
     setCart([]);
   };
 
+  const handleChangeGuestName = (newName: string) => {
+    if (!currentGuestId) return;
+    const cleanName = newName.trim();
+    if (!cleanName) return;
+    useSessionStore.getState().changeGuestName(tableNumber, currentGuestId, cleanName);
+    void setDeviceGuestName(cleanName);
+    setGuestNameInput(cleanName);
+  };
+
   const handleAddCartItem = (recipe: Recipe, quantity: number) => {
     const defaultOpts = getRecipeDefaultOptions(recipe, recipe.id === 'piscola' ? piscolaIntensity : 'normal');
     const existing = cart.find(
@@ -241,6 +250,7 @@ export default function TableRoute() {
         onStartNewGuest={handleStartNewGuest}
         onSubmitCart={handleSubmitCart}
         onDeleteQueuedOrder={(order) => deleteOrder(order.id)}
+        onChangeGuestName={handleChangeGuestName}
         recipeAvailability={(recipe) =>
           recipeIsAvailable(recipe, getRecipeDefaultOptions(recipe, recipe.id === 'piscola' ? piscolaIntensity : 'normal'))
         }

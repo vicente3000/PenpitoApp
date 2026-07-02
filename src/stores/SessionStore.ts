@@ -16,6 +16,7 @@ interface SessionState {
   setTipPercentage: (tableNumber: number, tipPercentage: number) => void;
   removeGuestFromTable: (tableNumber: number, guestId: string) => void;
   clearTableSession: (tableNumber: number) => void;
+  changeGuestName: (tableNumber: number, guestId: string, newName: string) => void;
   syncSessionFromNetwork: (tableNumber: number, nextSession: TableSession) => void;
   setDeviceGuestName: (name: string | null) => Promise<void>;
 }
@@ -170,6 +171,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void persistSessions(nextSessions);
     // Para notificar que la mesa se cerró, enviamos una sesión vacía
     deviceService.publish(`penpito/table/${tableNumber}/session`, '{}');
+  },
+  changeGuestName: (tableNumber, guestId, newName) => {
+    const cleanName = newName.trim();
+    if (!cleanName) return;
+    const nextSessions = get().sessions.map((session) => {
+      if (session.table_number !== tableNumber) {
+        return session;
+      }
+      return {
+        ...session,
+        guests: session.guests.map((g) => (g.id === guestId ? { ...g, name: cleanName } : g)),
+      };
+    });
+    set({ sessions: nextSessions });
+    void persistSessions(nextSessions);
+    publishSessionUpdate(tableNumber, nextSessions);
   },
   syncSessionFromNetwork: (tableNumber, nextSession) => {
     // Si recibimos un objeto vacío, significa que se cerró la sesión de la mesa

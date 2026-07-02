@@ -135,8 +135,8 @@ const defaultRecipes: RecipeRow[] = [
   },
   {
     id: 'whisky_rocks',
-    name: 'Whisky a la Roca',
-    description: 'Whisky servido con 4 hielos.',
+    name: 'Whisky a las Rocas',
+    description: 'Whisky premium servido a las rocas con hielo.',
     image_url: null,
     items: '[{"ingredient_name":"Whisky","amount_ml":60.0}]',
     est_time_seconds: 12,
@@ -146,8 +146,8 @@ const defaultRecipes: RecipeRow[] = [
   },
   {
     id: 'campari_rocks',
-    name: 'Campari a la Roca',
-    description: 'Campari servido con 4 hielos.',
+    name: 'Campari a las Rocas',
+    description: 'Campari refrescante servido a las rocas con hielo.',
     image_url: null,
     items: '[{"ingredient_name":"Campari","amount_ml":60.0}]',
     est_time_seconds: 12,

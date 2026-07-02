@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -52,6 +52,7 @@ export interface UserPortalProps {
   onStartNewGuest: () => void;
   onSubmitCart: () => void;
   onDeleteQueuedOrder: (order: DrinkOrder) => void;
+  onChangeGuestName: (newName: string) => void;
   recipeAvailability: (recipe: Recipe) => boolean;
   recipes: Recipe[];
   settings: MachineSettings | null;
@@ -65,26 +66,6 @@ export interface UserPortalProps {
   piscolaIntensity: PiscolaIntensity;
   tableNumber: number;
 }
-
-const splitOptions = [
-  {
-    id: 'pay_own' as const,
-    title: 'Cada uno paga lo suyo',
-    description: 'Cada persona de la mesa paga los tragos que ordenó.',
-  },
-  {
-    id: 'equal_split' as const,
-    title: 'Dividir en partes iguales',
-    description: 'Se reparte el total en partes iguales entre quienes participan de la mesa.',
-  },
-  {
-    id: 'host_pays' as const,
-    title: 'Una persona paga todo',
-    description: 'Una sola persona asume el total de la mesa y luego puede cobrar aparte.',
-  },
-];
-
-const tipPercentageOptions = [0, 10, 15, 20];
 
 export function UserPortalScreen({
   activeOrders,
@@ -101,6 +82,7 @@ export function UserPortalScreen({
   onStartNewGuest,
   onSubmitCart,
   onDeleteQueuedOrder,
+  onChangeGuestName,
   recipeAvailability,
   recipes,
   settings,
@@ -130,6 +112,14 @@ export function UserPortalScreen({
     setDialogVisible(true);
   };
 
+  // Name editing states
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editedName, setEditedName] = useState(currentGuestName);
+
+  useEffect(() => {
+    setEditedName(currentGuestName);
+  }, [currentGuestName]);
+
   const groupedByGuest = useMemo(() => {
     const map = new Map<string, DrinkOrder[]>();
     activeOrders.forEach((order) => {
@@ -152,76 +142,41 @@ export function UserPortalScreen({
     }, 0);
   }, [activeOrders, recipes]);
 
-  const tableTipPercentage = session?.tip_percentage ?? 0;
-  const tableTipAmount = Math.round(tableSubtotal * (tableTipPercentage / 100));
+  const tableTipAmount = Math.round(tableSubtotal * 0.10); // Suggested 10%
   const tableTotal = tableSubtotal + tableTipAmount;
 
-  const hostGuestName = useMemo(() => {
-    return session?.guests.find((g) => g.id === session.host_guest_id)?.name ?? '';
-  }, [session]);
-
-  const selectedRecipeLabel = useMemo(() => {
-    if (!selectedRecipe) return '';
-    return buildCartItemLabel(
-      selectedRecipe,
-      getRecipeDefaultOptions(
-        selectedRecipe,
-        selectedRecipe.id === 'piscola' ? piscolaIntensity : 'normal'
-      )
+  const handleAskForBill = () => {
+    showCustomDialog(
+      'Pedir la Cuenta',
+      `Subtotal consumido: ${formatCurrency(tableSubtotal)}\nPropina sugerida (10%): ${formatCurrency(tableTipAmount)}\nTotal estimado: ${formatCurrency(tableTotal)}\n\n¿Deseas solicitar la cuenta al mesero? El garzón se acercará a tu mesa para realizar el cobro y gestionar la división del pago.`,
+      [
+        { text: 'Cancelar', variant: 'outline' },
+        {
+          text: 'Pedir Cuenta',
+          variant: 'primary',
+          onPress: () => {
+            showCustomDialog(
+              'Solicitud enviada',
+              'El garzón va en camino con tu cuenta. ¡Muchas gracias por tu visita!',
+              [{ text: 'Aceptar', variant: 'primary' }]
+            );
+          }
+        }
+      ]
     );
-  }, [piscolaIntensity, selectedRecipe]);
+  };
 
-  const splitSettingsSection = (
-    <Card style={styles.sectionCard}>
-      <Text style={styles.sectionTitle}>División de cuenta</Text>
-      <Text style={styles.sectionText}>
-        Elige cómo repartir el total de los pedidos en la mesa:
-      </Text>
-      {splitOptions.map((option) => (
-        <Pressable
-          key={option.id}
-          style={[
-            styles.selectionRow,
-            session?.split_method === option.id && styles.selectionRowActive,
-          ]}
-          onPress={() => setSplitMethod(option.id)}
-        >
-          <View style={styles.selectionRowContent}>
-            <Text style={styles.selectionRowTitle}>{option.title}</Text>
-            <Text style={styles.selectionRowText}>{option.description}</Text>
-          </View>
-          <FontAwesome
-            name={session?.split_method === option.id ? 'check-circle' : 'circle-o'}
-            size={20}
-            color={session?.split_method === option.id ? Colors.primary : Colors.textMuted}
-          />
-        </Pressable>
-      ))}
-
-      {session?.split_method === 'host_pays' && (
-        <View style={styles.hostWrap}>
-          <Text style={styles.inputLabel}>Pago total asignado</Text>
-          <Text style={styles.sectionText}>
-            {hostGuestName
-              ? `${hostGuestName} paga toda la mesa.`
-              : 'Quien active esta opción queda como pagador principal.'}
-          </Text>
-          {currentGuestName ? (
-            <Button
-              title="Ser el pagador principal"
-              variant="outline"
-              size="sm"
-              onPress={() => {
-                const me = session.guests.find((g) => g.name === currentGuestName);
-                setHostGuest(me?.id);
-              }}
-              style={styles.hostBtn}
-            />
-          ) : null}
-        </View>
-      )}
-    </Card>
-  );
+  const handleSaveName = () => {
+    const clean = editedName.trim();
+    if (!clean) {
+      showCustomDialog('Nombre requerido', 'El nombre no puede estar vacío.', [
+        { text: 'Aceptar', variant: 'outline' }
+      ]);
+      return;
+    }
+    onChangeGuestName(clean);
+    setIsEditingName(false);
+  };
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -281,77 +236,110 @@ export function UserPortalScreen({
                 </View>
               ))}
             </View>
-            <Button
-              title="Cerrar sesión / Salir"
-              variant="ghost"
-              size="sm"
-              onPress={() => {
-                showCustomDialog(
-                  'Cerrar sesión',
-                  '¿Estás seguro que deseas salir de esta mesa?',
-                  [
-                    { text: 'Cancelar', variant: 'outline' },
-                    { text: 'Salir', variant: 'danger', onPress: onStartNewGuest }
-                  ]
-                );
-              }}
-              style={styles.logoutBtn}
-            />
-          </Card>
 
-          <Card style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>Carta de Coctelería</Text>
-            <Text style={styles.sectionText}>
-              Selecciona el trago para configurar su preparación y agregarlo al pedido.
-            </Text>
-            <DrinkGrid
-              recipes={recipes}
-              onSelectRecipe={onSelectRecipe}
-              recipeAvailability={recipeAvailability}
-              selectedRecipeId={selectedRecipe?.id}
-            />
-
-            {selectedRecipe && (
-              <View style={styles.recipeConfigContainer}>
-                <Text style={styles.configSubtitle}>Configuración del coctel</Text>
-                <Text style={styles.configLabel}>{selectedRecipeLabel}</Text>
-                {selectedRecipe.id === 'piscola' && (
-                  <View style={styles.intensityRow}>
-                    {(Object.keys(piscolaProfiles) as PiscolaIntensity[]).map((level) => (
-                      <Pressable
-                        key={level}
-                        style={[
-                          styles.intensityChip,
-                          piscolaIntensity === level && styles.intensityChipActive,
-                        ]}
-                        onPress={() => setPiscolaIntensity(level)}
-                      >
-                        <Text
-                          style={[
-                            styles.intensityChipText,
-                            piscolaIntensity === level && styles.intensityChipTextActive,
-                          ]}
-                        >
-                          {piscolaProfiles[level].label}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                )}
+            {isEditingName ? (
+              <View style={styles.editNameRow}>
+                <TextInput
+                  placeholder="Nuevo nombre"
+                  placeholderTextColor={Colors.textMuted}
+                  style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                  value={editedName}
+                  onChangeText={setEditedName}
+                  autoCorrect={false}
+                />
                 <Button
-                  title="Agregar al carrito"
+                  title="Guardar"
                   variant="primary"
-                  onPress={() => onAddCartItem(selectedRecipe, 1)}
-                  style={styles.addCartBtn}
+                  size="sm"
+                  onPress={handleSaveName}
+                  style={styles.saveNameBtn}
+                />
+                <Button
+                  title="Cancelar"
+                  variant="outline"
+                  size="sm"
+                  onPress={() => setIsEditingName(false)}
+                  style={styles.cancelNameBtn}
+                />
+              </View>
+            ) : (
+              <View style={styles.actionsNameRow}>
+                <Button
+                  title="Cambiar mi nombre"
+                  variant="outline"
+                  size="sm"
+                  onPress={() => {
+                    setEditedName(currentGuestName);
+                    setIsEditingName(true);
+                  }}
+                  style={styles.actionNameBtn}
+                />
+                <Button
+                  title="Salir de la mesa"
+                  variant="ghost"
+                  size="sm"
+                  onPress={() => {
+                    showCustomDialog(
+                      'Salir de la mesa',
+                      '¿Estás seguro que deseas salir de esta mesa?',
+                      [
+                        { text: 'Cancelar', variant: 'outline' },
+                        { text: 'Salir', variant: 'danger', onPress: onStartNewGuest }
+                      ]
+                    );
+                  }}
+                  style={styles.actionNameBtn}
                 />
               </View>
             )}
           </Card>
 
+          {/* Selector de perfil de Piscola */}
+          <Card style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>¿Cómo prefieres tu Piscola? 🇨🇱</Text>
+            <Text style={styles.sectionText}>
+              Selecciona la intensidad. Afectará a todas las piscolas que agregues a tu pedido:
+            </Text>
+            <View style={styles.intensityRow}>
+              {(Object.keys(piscolaProfiles) as PiscolaIntensity[]).map((level) => (
+                <Pressable
+                  key={level}
+                  style={[
+                    styles.intensityChip,
+                    piscolaIntensity === level && styles.intensityChipActive,
+                  ]}
+                  onPress={() => setPiscolaIntensity(level)}
+                >
+                  <Text
+                    style={[
+                      styles.intensityChipText,
+                      piscolaIntensity === level && styles.intensityChipTextActive,
+                    ]}
+                  >
+                    {piscolaProfiles[level].label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </Card>
+
+          <Card style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>Carta de Coctelería</Text>
+            <Text style={styles.sectionText}>
+              Presiona cualquier trago para agregarlo directamente al pedido:
+            </Text>
+            <DrinkGrid
+              recipes={recipes}
+              onSelectRecipe={(recipe) => onAddCartItem(recipe, 1)}
+              recipeAvailability={recipeAvailability}
+              selectedRecipeId={null}
+            />
+          </Card>
+
           <Card style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>Tu pedido actual</Text>
             {cart.length === 0 ? (
-              <Text style={styles.emptyCartText}>Tu carrito está vacío.</Text>
+              <Text style={styles.emptyCartText}>Tu carrito está vacío. Presiona tragos en la carta para agregar.</Text>
             ) : (
               cart.map((item) => (
                 <View key={item.id} style={styles.cartRow}>
@@ -448,49 +436,35 @@ export function UserPortalScreen({
             )}
           </Card>
 
-          <Card style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>Total y propina</Text>
-            <Text style={styles.sectionText}>
-              Selecciona el porcentaje de propina para la mesa:
-            </Text>
-            <View style={styles.intensityRow}>
-              {tipPercentageOptions.map((tipOption) => (
-                <Pressable
-                  key={tipOption}
-                  style={[
-                    styles.intensityChip,
-                    tableTipPercentage === tipOption && styles.intensityChipActive,
-                  ]}
-                  onPress={() => setTipPercentage(tipOption)}
-                >
-                  <Text
-                    style={[
-                      styles.intensityChipText,
-                      tableTipPercentage === tipOption && styles.intensityChipTextActive,
-                    ]}
-                  >
-                    {tipOption}%
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            <View style={styles.billSummaryCard}>
-              <View style={styles.summaryBreakdownRow}>
-                <Text style={styles.summaryBreakdownLabel}>Subtotal mesa</Text>
-                <Text style={styles.summaryBreakdownValue}>{formatCurrency(tableSubtotal)}</Text>
+          {/* Pedir la cuenta card */}
+          {activeOrders.length > 0 && (
+            <Card style={styles.sectionCard}>
+              <Text style={styles.sectionTitle}>Total de la mesa</Text>
+              <Text style={styles.sectionText}>
+                Si deseas cerrar la mesa o pagar lo consumido, solicita la cuenta y el garzón vendrá a realizar el cobro.
+              </Text>
+              <View style={styles.billSummaryCard}>
+                <View style={styles.summaryBreakdownRow}>
+                  <Text style={styles.summaryBreakdownLabel}>Subtotal Consumido</Text>
+                  <Text style={styles.summaryBreakdownValue}>{formatCurrency(tableSubtotal)}</Text>
+                </View>
+                <View style={styles.summaryBreakdownRow}>
+                  <Text style={styles.summaryBreakdownLabel}>Propina sugerida (10%)</Text>
+                  <Text style={styles.summaryBreakdownValue}>{formatCurrency(tableTipAmount)}</Text>
+                </View>
+                <View style={styles.summaryBreakdownRow}>
+                  <Text style={styles.summaryBreakdownTotalLabel}>Total estimado</Text>
+                  <Text style={styles.summaryBreakdownTotalValue}>{formatCurrency(tableTotal)}</Text>
+                </View>
               </View>
-              <View style={styles.summaryBreakdownRow}>
-                <Text style={styles.summaryBreakdownLabel}>Propina ({tableTipPercentage}%)</Text>
-                <Text style={styles.summaryBreakdownValue}>{formatCurrency(tableTipAmount)}</Text>
-              </View>
-              <View style={styles.summaryBreakdownRow}>
-                <Text style={styles.summaryBreakdownTotalLabel}>Total con propina</Text>
-                <Text style={styles.summaryBreakdownTotalValue}>{formatCurrency(tableTotal)}</Text>
-              </View>
-            </View>
-          </Card>
-
-          {splitSettingsSection}
+              <Button
+                title="Pedir la cuenta al garzón"
+                variant="primary"
+                onPress={handleAskForBill}
+                style={[styles.submitCartBtn, { marginTop: 14 }]}
+              />
+            </Card>
+          )}
         </>
       )}
 
@@ -568,13 +542,11 @@ const styles = StyleSheet.create({
   joinBtn: {
     width: '100%',
   },
-  logoutBtn: {
-    marginTop: 12,
-  },
   guestList: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+    marginBottom: 12,
   },
   guestChip: {
     backgroundColor: Colors.surfaceHighlight,
@@ -597,22 +569,28 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontWeight: '700',
   },
-  recipeConfigContainer: {
-    marginTop: 20,
-    borderTopWidth: 1.2,
-    borderTopColor: Colors.border,
-    paddingTop: 16,
+  editNameRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    alignItems: 'center',
   },
-  configSubtitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: Colors.text,
-    marginBottom: 8,
+  saveNameBtn: {
+    minHeight: 44,
+    paddingHorizontal: 16,
   },
-  configLabel: {
-    fontSize: 14,
-    color: Colors.textMuted,
-    marginBottom: 12,
+  cancelNameBtn: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+  },
+  actionsNameRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  actionNameBtn: {
+    flex: 1,
+    minHeight: 36,
   },
   intensityRow: {
     flexDirection: 'row',
@@ -640,9 +618,6 @@ const styles = StyleSheet.create({
   intensityChipTextActive: {
     color: Colors.primary,
     fontWeight: '800',
-  },
-  addCartBtn: {
-    width: '100%',
   },
   emptyCartText: {
     color: Colors.textMuted,
@@ -826,51 +801,5 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontSize: 16,
     fontWeight: '900',
-  },
-  selectionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 14,
-    borderRadius: 16,
-    backgroundColor: Colors.surfaceHighlight,
-    borderWidth: 1.2,
-    borderColor: Colors.border,
-    marginBottom: 10,
-  },
-  selectionRowActive: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryGlow,
-  },
-  selectionRowContent: {
-    flex: 1,
-    paddingRight: 16,
-  },
-  selectionRowTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: Colors.text,
-    marginBottom: 2,
-  },
-  selectionRowText: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    lineHeight: 15,
-  },
-  hostWrap: {
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: Colors.text,
-    marginBottom: 4,
-  },
-  hostBtn: {
-    marginTop: 8,
-    width: '100%',
   },
 }) as any;
