@@ -5,7 +5,7 @@
 //  PINOUT (Unificado en 1x ESP32)
 // ═══════════════════════════════════════════
 // BOMBAS: 1 pin de control por bomba (jumpers ENA/ENB puestos, IN2/IN4 a GND)
-const int B_PIN[] = {12, 13, 19, 25, 26, 32, 33};
+const int B_PIN[] = {16, 17, 19, 25, 26, 32, 33};
 const int NUM_BOMBAS = 7;
 float b_ml_ps[7] = {0};
 unsigned long pump_stop_time[7] = {0}; // Tiempos de parada de bombas (no bloqueante)
@@ -14,24 +14,30 @@ unsigned long pump_stop_time[7] = {0}; // Tiempos de parada de bombas (no bloque
 Servo srv_pos[3];
 const int SRV_PIN[] = {22, 23, 27};
 Servo srv_cont;
-const int SRV_CONT_PIN = 14;
+const int SRV_CONT_PIN = 21;
 const int SRV_CONT_STOP = 90;
 const int SRV_CONT_TRIM = 0;
 
 // NEMA17 + A4988
-const int MOTOR_STEP = 5;
-const int MOTOR_DIR = 18;
+const int MOTOR_STEP = 18;
+const int MOTOR_DIR = 12;
 const int MOTOR_ENABLE = 4; // LOW = Habilitado, HIGH = Apagado (sin energía)
 const int LIMIT_SW = 34;    // Entrada digital con pull-down externo de 10k
+const int LIMIT_ACTIVE_LEVEL = HIGH;
+unsigned int MOTOR_STEP_DELAY_US = 3000;
 volatile bool limit_triggered = false;
 
 void IRAM_ATTR on_limit() {
-  limit_triggered = true;
+  if (digitalRead(LIMIT_SW) == LIMIT_ACTIVE_LEVEL) {
+    limit_triggered = true;
+  }
 }
 
 void help();
 void motor_stop();
 bool is_limit_pressed();
+void home();
+void mover_a(int target);
 
 // Variables para secuencia de test de bombas no bloqueante
 int test_active_pump = -1;
@@ -69,10 +75,17 @@ void setup() {
   digitalWrite(MOTOR_DIR, LOW);
   pinMode(MOTOR_ENABLE, OUTPUT);
   digitalWrite(MOTOR_ENABLE, HIGH); // Apagado por defecto al iniciar para evitar sobrecalentamiento
+  Serial.print(F("Delay motor inicial (us) = "));
+  Serial.println(MOTOR_STEP_DELAY_US);
 
   // Limit Switch
   pinMode(LIMIT_SW, INPUT);
+  delay(5);
   attachInterrupt(digitalPinToInterrupt(LIMIT_SW), on_limit, RISING);
+  Serial.print(F("Limit switch en reposo = "));
+  Serial.println(digitalRead(LIMIT_SW) == HIGH ? F("HIGH") : F("LOW"));
+  Serial.print(F("Nivel interpretado como APRETADO = "));
+  Serial.println(LIMIT_ACTIVE_LEVEL == HIGH ? F("HIGH") : F("LOW"));
 
   // Menu de Ayuda
   Serial.println(F("╔══════════════════════════════╗"));
@@ -97,6 +110,8 @@ void help() {
   Serial.println(F("── MOTOR ──"));
   Serial.println(F("  mr <steps>   girar N pasos (ej: mr 200 o mr -200)"));
   Serial.println(F("  mh           home (busca limit switch)"));
+  Serial.println(F("  mt <us>      cambiar velocidad motor (delay en us)"));
+  Serial.println(F("  mx           prueba completa de la maquina"));
   Serial.println(F("  ms           stop de emergencia"));
   Serial.println(F("  mp <pos>     ir a posicion absoluta"));
   Serial.println(F("── GENERAL ──"));
@@ -114,6 +129,21 @@ void bombas_off() {
   }
   test_active_pump = -1; // Detiene secuencia de pruebas si está activa
   Serial.println(F("Bombas Apagadas"));
+}
+
+void bomba_pulse_blocking(int n, unsigned long duration_ms) {
+  if (n < 0 || n >= NUM_BOMBAS) return;
+  digitalWrite(B_PIN[n], HIGH);
+  delay(duration_ms);
+  digitalWrite(B_PIN[n], LOW);
+}
+
+void bombas_pulse_blocking(int n1, int n2, unsigned long duration_ms) {
+  if (n1 >= 0 && n1 < NUM_BOMBAS) digitalWrite(B_PIN[n1], HIGH);
+  if (n2 >= 0 && n2 < NUM_BOMBAS) digitalWrite(B_PIN[n2], HIGH);
+  delay(duration_ms);
+  if (n1 >= 0 && n1 < NUM_BOMBAS) digitalWrite(B_PIN[n1], LOW);
+  if (n2 >= 0 && n2 < NUM_BOMBAS) digitalWrite(B_PIN[n2], LOW);
 }
 
 void bomba_on(int n, unsigned long duration_ms) {
@@ -180,6 +210,60 @@ void servo_cont_set(int vel) {
   Serial.print(F(" (pwm=")); Serial.print(pulse); Serial.println(F(")"));
 }
 
+void test_maquina_completa() {
+  Serial.println(F("Iniciando prueba completa de la maquina..."));
+  bombas_off();
+  servo_cont_set(0);
+
+  Serial.println(F("Paso 1: Home inicial"));
+  home();
+
+  Serial.println(F("Paso 2: Posicion 3600 - vaso"));
+  mover_a(3600);
+  servo_pos(0, 180);
+  delay(1000);
+  servo_pos(0, 0);
+  delay(1000);
+
+  Serial.println(F("Paso 3: Posicion 2600 - hielo"));
+  mover_a(2600);
+  servo_pos(1, 0);
+  delay(1000);
+  servo_pos(1, 180);
+  delay(1000);
+  servo_pos(1, 0);
+  delay(1000);
+
+  Serial.println(F("Paso 4: Posicion 1860 - bombas 1 y 2"));
+  mover_a(1860);
+  bombas_pulse_blocking(0, 1, 2000);
+
+  Serial.println(F("Paso 5: Posicion 1600 - bombas 3 y 4"));
+  mover_a(1600);
+  bombas_pulse_blocking(2, 3, 2000);
+
+  Serial.println(F("Paso 6: Posicion 1400 - bombas 5 y 6"));
+  mover_a(1400);
+  bombas_pulse_blocking(4, 5, 2000);
+
+  Serial.println(F("Paso 7: Posicion 1200 - bomba 7"));
+  mover_a(1200);
+  bomba_pulse_blocking(6, 2000);
+
+  Serial.println(F("Paso 8: Posicion 800 - cuchara"));
+  mover_a(800);
+  servo_cont_set(10);
+  delay(3000);
+  servo_cont_set(-10);
+  delay(3000);
+  servo_cont_set(0);
+
+  Serial.println(F("Paso 9: Home final"));
+  home();
+
+  Serial.println(F("Prueba completa terminada."));
+}
+
 // ═══════════════════════════════════════════
 //  MOTOR NEMA17 (A4988)
 // ═══════════════════════════════════════════
@@ -194,13 +278,13 @@ void motor_step() {
   digitalWrite(MOTOR_STEP, HIGH);
   delayMicroseconds(5);
   digitalWrite(MOTOR_STEP, LOW);
-  delayMicroseconds(1000); // Frecuencia de 1kHz para el paso
+  delayMicroseconds(MOTOR_STEP_DELAY_US); // Baja la velocidad para evitar que la GT2 patine
 }
 
 bool is_limit_pressed() {
-  if (digitalRead(LIMIT_SW) == HIGH) {
+  if (digitalRead(LIMIT_SW) == LIMIT_ACTIVE_LEVEL) {
     delayMicroseconds(50); // Filtro contra ruido / debounce
-    return digitalRead(LIMIT_SW) == HIGH;
+    return digitalRead(LIMIT_SW) == LIMIT_ACTIVE_LEVEL;
   }
   return false;
 }
@@ -233,6 +317,17 @@ bool motor_steps(int n) {
 void home() {
   Serial.println(F("Buscando Home..."));
   limit_triggered = false;
+  Serial.print(F("Estado inicial LIMIT_SW = "));
+  Serial.println(digitalRead(LIMIT_SW) == HIGH ? F("HIGH") : F("LOW"));
+  Serial.print(F("Esperando nivel de APRETADO = "));
+  Serial.println(LIMIT_ACTIVE_LEVEL == HIGH ? F("HIGH") : F("LOW"));
+
+  bool last_limit_state = (digitalRead(LIMIT_SW) == LIMIT_ACTIVE_LEVEL);
+  if (last_limit_state) {
+    Serial.println(F("Switch de home ya esta presionado al iniciar."));
+  } else {
+    Serial.println(F("Switch de home liberado al iniciar."));
+  }
 
   digitalWrite(MOTOR_DIR, LOW);    // Sentido hacia el switch
   digitalWrite(MOTOR_ENABLE, LOW); // Habilita motor
@@ -240,9 +335,20 @@ void home() {
 
   // Avanza paso a paso de forma continua hasta tocar el switch
   while (!limit_triggered && !is_limit_pressed()) {
+    bool current_limit_state = (digitalRead(LIMIT_SW) == LIMIT_ACTIVE_LEVEL);
+    if (current_limit_state != last_limit_state) {
+      last_limit_state = current_limit_state;
+      if (current_limit_state) {
+        Serial.println(F("Switch de home APRETADO."));
+      } else {
+        Serial.println(F("Switch de home LIBERADO."));
+      }
+    }
     motor_step();
   }
 
+  Serial.print(F("Switch de limite detectado. LIMIT_SW = "));
+  Serial.println(digitalRead(LIMIT_SW) == HIGH ? F("HIGH") : F("LOW"));
   digitalWrite(MOTOR_STEP, LOW);
   motor_pos = 0;
   Serial.println(F("Switch de limite tocado. Home posicionado."));
@@ -393,6 +499,9 @@ void loop() {
     else if (s == 'h') {
       home();
     }
+    else if (s == 'x') {
+      test_maquina_completa();
+    }
     else if (s == 'r') {
       int steps = c.substring(2).toInt();
       mover_a(motor_pos + steps);
@@ -400,6 +509,17 @@ void loop() {
     else if (s == 'p') {
       int pos = c.substring(2).toInt();
       mover_a(pos);
+    }
+    else if (s == 't') {
+      unsigned int new_delay = c.substring(2).toInt();
+      if (new_delay >= 200) {
+        MOTOR_STEP_DELAY_US = new_delay;
+        Serial.print(F("Nuevo delay motor = "));
+        Serial.print(MOTOR_STEP_DELAY_US);
+        Serial.println(F(" us"));
+      } else {
+        Serial.println(F("Valor invalido. Usa mt <us> con us >= 200"));
+      }
     }
   }
 }
