@@ -391,7 +391,7 @@ export const initDb = async () => {
   await initPromise;
 };
 
-export const resetDatabase = async () => {
+export async function resetDatabase() {
   const db = await getDb();
   await db.execAsync(`
     DELETE FROM orders;
@@ -399,4 +399,4 @@ export const resetDatabase = async () => {
   await db.execAsync(`DELETE FROM inventory;`);
   await seedInventory(db);
   console.log('[LocalDatabase] Database reset complete');
-};
+}

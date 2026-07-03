@@ -462,3 +462,11 @@ export const initDb = async () => {
 
   await initPromise;
 };
+
+export async function resetDatabase() {
+  const state = loadState();
+  state.orders = [];
+  state.inventory = [...defaultInventory];
+  saveState(state);
+  console.log('[LocalDatabase.web] Database reset complete');
+}

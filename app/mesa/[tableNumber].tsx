@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Alert, StyleSheet } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,6 +17,7 @@ export default function TableRoute() {
   const { tableNumber: tableNumberParam } = useLocalSearchParams();
   const tableNumber = parseInt(String(tableNumberParam), 10);
 
+  const submittingRef = useRef(false);
   const { recipes } = useRecipeStore();
   const { inventory, recipeIsAvailable, consumeForRecipe } = useInventoryStore();
   const { settings } = useSettingsStore();

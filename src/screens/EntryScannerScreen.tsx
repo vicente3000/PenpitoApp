@@ -59,7 +59,8 @@ export function EntryScannerScreen({ onResolved }: EntryScannerScreenProps) {
 
       setScanError('¡Éxito! Base de datos reiniciada y stock al 100% sincronizado en red.');
     } catch (e) {
-      setScanError('Error al reiniciar la base de datos local.');
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setScanError(`Error al reiniciar: ${errMsg}`);
       console.error(e);
     }
   };

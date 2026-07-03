@@ -605,23 +605,51 @@ export function AdminScreen({
       keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
     >
       <ScrollView contentContainerStyle={styles.scrollContent}>
-      {/* Emergency Stop Banner */}
-      <Card style={styles.emergencyCard} glow>
-        <View style={styles.emergencyRow}>
-          <FontAwesome name="exclamation-triangle" size={24} color="#ffffff" />
-          <View style={styles.emergencyTextWrap}>
-            <Text style={styles.emergencyTitle}>PARADA DE EMERGENCIA</Text>
-            <Text style={styles.emergencySubtitle}>Detiene de inmediato todo hardware activo</Text>
+      {/* Emergency Stop Banner or Reactivation Banner */}
+      {!machineState.isOn ? (
+        <Card style={[styles.emergencyCard, { backgroundColor: 'rgba(239, 68, 68, 0.08)', borderColor: Colors.error }]} glow={false}>
+          <View style={styles.emergencyRow}>
+            <FontAwesome name="exclamation-triangle" size={24} color={Colors.error} />
+            <View style={[styles.emergencyTextWrap, { marginLeft: 12 }]}>
+              <Text style={[styles.emergencyTitle, { color: Colors.text }]}>MÁQUINA APAGADA</Text>
+              <Text style={[styles.emergencySubtitle, { color: Colors.textMuted }]}>La corriente del dosificador está desactivada.</Text>
+            </View>
+            <Button
+              title="ENCENDER"
+              variant="primary"
+              size="sm"
+              onPress={async () => {
+                const success = await deviceService.sendCommand({ cmd: 'POWER', val: 'ON', target: 'kraken' });
+                if (success) {
+                  showCustomDialog(
+                    'Máquina Encendida',
+                    'Se ha reactivado la corriente y reiniciado la máquina con éxito.',
+                    [{ text: 'Aceptar', variant: 'primary' }]
+                  );
+                }
+              }}
+              style={{ backgroundColor: Colors.success, borderColor: Colors.success, minHeight: 32, paddingHorizontal: 12 } as any}
+            />
           </View>
-          <Button
-            title="DETENER"
-            variant="danger"
-            size="sm"
-            onPress={handleEmergencyStop}
-            style={styles.stopBtn}
-          />
-        </View>
-      </Card>
+        </Card>
+      ) : (
+        <Card style={styles.emergencyCard} glow>
+          <View style={styles.emergencyRow}>
+            <FontAwesome name="exclamation-triangle" size={24} color="#ffffff" />
+            <View style={styles.emergencyTextWrap}>
+              <Text style={styles.emergencyTitle}>PARADA DE EMERGENCIA</Text>
+              <Text style={styles.emergencySubtitle}>Detiene de inmediato todo hardware activo</Text>
+            </View>
+            <Button
+              title="DETENER"
+              variant="danger"
+              size="sm"
+              onPress={handleEmergencyStop}
+              style={styles.stopBtn}
+            />
+          </View>
+        </Card>
+      )}
 
       <View style={styles.topBar}>
         <Pressable style={styles.backChip} onPress={onBack}>

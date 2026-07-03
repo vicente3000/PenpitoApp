@@ -13,6 +13,7 @@ import { getSkippedSteps } from '../utils/preparation';
 import { deviceService } from '../services/DeviceService';
 import { useInventoryStore } from './InventoryStore';
 import { useRecipeStore } from './RecipeStore';
+import { useSessionStore } from './SessionStore';
 
 type CreateOrderItemInput = {
   recipe: Recipe;
@@ -186,6 +187,36 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       return false;
     }
 
+    const sessionStore = useSessionStore.getState();
+    const tableSession = sessionStore.sessions.find((s) => s.table_number === nextQueued.table_number);
+    const hasActiveSession = tableSession && tableSession.guests && tableSession.guests.length > 0;
+
+    if (!hasActiveSession) {
+      console.log(`[OrderStore] Deleting stale queued order ${nextQueued.id} for table ${nextQueued.table_number} because there is no active session`);
+      await orderRepository.deleteOrder(nextQueued.id);
+      set((prevState) => ({
+        orders: prevState.orders.filter((o) => o.id !== nextQueued.id),
+      }));
+      publishOrdersUpdate(nextQueued.table_number, get().orders);
+      
+      // Devolver ingredientes
+      try {
+        const recipe = useRecipeStore.getState().recipes.find((r) => r.id === nextQueued.recipe_id);
+        if (recipe) {
+          await useInventoryStore.getState().restoreForRecipe(recipe, {
+            iceCount: nextQueued.ice_count,
+            alcoholOz: nextQueued.alcohol_oz,
+            mixerOz: nextQueued.mixer_oz,
+          });
+        }
+      } catch (e) {
+        console.warn('[OrderStore] Failed to restore ingredients for stale order', e);
+      }
+      
+      // Intentar procesar la siguiente orden de la cola
+      return get().triggerNextQueuedOrder();
+    }
+
     const startedOrder = await startPreparation(nextQueued);
     if (!startedOrder) {
       return false;
@@ -325,7 +356,12 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   },
   deleteOrder: async (orderId) => {
     const order = get().orders.find((entry) => entry.id === orderId);
-    if (!order || order.status === 'preparing') {
+    if (!order) {
+      return null;
+    }
+
+    const { isConnected } = useAppStore.getState();
+    if (order.status === 'preparing' && isConnected) {
       return null;
     }
 
@@ -354,17 +390,6 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     return order;
   },
   clearTableOrders: async (tableNumber) => {
-    const state = get();
-    const hasActiveOrders = state.orders.some(
-      (order) =>
-        order.table_number === tableNumber &&
-        ['queued', 'preparing', 'ready'].includes(order.status)
-    );
-
-    if (hasActiveOrders) {
-      return;
-    }
-
     await orderRepository.deleteOrdersForTable(tableNumber);
     set((prevState) => ({
       orders: prevState.orders.filter((order) => order.table_number !== tableNumber),

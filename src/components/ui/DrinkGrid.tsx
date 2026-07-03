@@ -25,8 +25,12 @@ function getDrinkCardImage(recipeId: string): ImageSourcePropType | null {
     case 'piscola':
       return require('../../../assets/images/drink-piscola-carousel.png');
     case 'whisky_rocks':
+    case 'godfather':
       return require('../../../assets/images/drink-whisky-carousel.png');
     case 'negroni':
+    case 'boulevardier':
+    case 'americano':
+    case 'campari_rocks':
       return require('../../../assets/images/drink-negroni-carousel.png');
     case 'gin_tonic':
       return require('../../../assets/images/drink-gin-tonic-carousel.png');
