@@ -218,144 +218,162 @@ export function UserPortalScreen({
           />
         </Card>
       ) : (
-        <>
-          <Card style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>Integrantes de mesa</Text>
-            <View style={styles.guestList}>
-              {session?.guests.map((g) => (
-                <View
-                  key={g.id}
+        <Card style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Integrantes de mesa</Text>
+          <View style={styles.guestList}>
+            {session?.guests.map((g) => (
+              <View
+                key={g.id}
+                style={[
+                  styles.guestChip,
+                  g.name === currentGuestName && styles.guestChipActive,
+                ]}
+              >
+                <Text
                   style={[
-                    styles.guestChip,
-                    g.name === currentGuestName && styles.guestChipActive,
+                    styles.guestChipText,
+                    g.name === currentGuestName && styles.guestChipTextActive,
                   ]}
+                >
+                  {g.name}
+                </Text>
+              </View>
+            ))}
+          </View>
+
+          {isEditingName ? (
+            <View style={styles.editNameRow}>
+              <TextInput
+                placeholder="Nuevo nombre"
+                placeholderTextColor={Colors.textMuted}
+                style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                value={editedName}
+                onChangeText={setEditedName}
+                autoCorrect={false}
+              />
+              <Button
+                title="Guardar"
+                variant="primary"
+                size="sm"
+                onPress={handleSaveName}
+                style={styles.saveNameBtn}
+              />
+              <Button
+                title="Cancelar"
+                variant="outline"
+                size="sm"
+                onPress={() => setIsEditingName(false)}
+                style={styles.cancelNameBtn}
+              />
+            </View>
+          ) : (
+            <View style={styles.actionsNameRow}>
+              <Button
+                title="Cambiar mi nombre"
+                variant="outline"
+                size="sm"
+                onPress={() => {
+                  setEditedName(currentGuestName);
+                  setIsEditingName(true);
+                }}
+                style={styles.actionNameBtn}
+              />
+              <Button
+                title="Salir de la mesa"
+                variant="ghost"
+                size="sm"
+                onPress={() => {
+                  showCustomDialog(
+                    'Salir de la mesa',
+                    '¿Estás seguro que deseas salir de esta mesa?',
+                    [
+                      { text: 'Cancelar', variant: 'outline' },
+                      { text: 'Salir', variant: 'danger', onPress: onStartNewGuest }
+                    ]
+                  );
+                }}
+                style={styles.actionNameBtn}
+              />
+            </View>
+          )}
+        </Card>
+      )}
+
+      <Card style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>Carta de Coctelería</Text>
+        <Text style={styles.sectionText}>
+          Presiona cualquier trago para agregarlo directamente a tu pedido:
+        </Text>
+        <DrinkGrid
+          recipes={recipes}
+          onSelectRecipe={(recipe) => {
+            if (!currentGuestName) {
+              showCustomDialog(
+                'Únete a la mesa',
+                'Debes ingresar tu nombre e unirte a la mesa para comenzar a pedir tragos.',
+                [{ text: 'Aceptar', variant: 'primary' }]
+              );
+              return;
+            }
+            if (recipe.id === 'piscola') {
+              onSelectRecipe(recipe);
+            } else {
+              onSelectRecipe(null);
+              onAddCartItem(recipe, 1);
+            }
+          }}
+          recipeAvailability={recipeAvailability}
+          selectedRecipeId={selectedRecipe?.id}
+        />
+
+        {selectedRecipe?.id === 'piscola' && (
+          <View style={styles.recipeConfigContainer}>
+            <Text style={styles.configSubtitle}>¿Cómo prefieres tu Piscola?</Text>
+            <Text style={styles.configLabel}>Selecciona la intensidad de la combinación:</Text>
+            <View style={styles.intensityRow}>
+              {(Object.keys(piscolaProfiles) as PiscolaIntensity[]).map((level) => (
+                <Pressable
+                  key={level}
+                  style={[
+                    styles.intensityChip,
+                    piscolaIntensity === level && styles.intensityChipActive,
+                  ]}
+                  onPress={() => setPiscolaIntensity(level)}
                 >
                   <Text
                     style={[
-                      styles.guestChipText,
-                      g.name === currentGuestName && styles.guestChipTextActive,
+                      styles.intensityChipText,
+                      piscolaIntensity === level && styles.intensityChipTextActive,
                     ]}
                   >
-                    {g.name}
+                    {piscolaProfiles[level].label}
                   </Text>
-                </View>
+                </Pressable>
               ))}
             </View>
-
-            {isEditingName ? (
-              <View style={styles.editNameRow}>
-                <TextInput
-                  placeholder="Nuevo nombre"
-                  placeholderTextColor={Colors.textMuted}
-                  style={[styles.input, { flex: 1, marginBottom: 0 }]}
-                  value={editedName}
-                  onChangeText={setEditedName}
-                  autoCorrect={false}
-                />
-                <Button
-                  title="Guardar"
-                  variant="primary"
-                  size="sm"
-                  onPress={handleSaveName}
-                  style={styles.saveNameBtn}
-                />
-                <Button
-                  title="Cancelar"
-                  variant="outline"
-                  size="sm"
-                  onPress={() => setIsEditingName(false)}
-                  style={styles.cancelNameBtn}
-                />
-              </View>
-            ) : (
-              <View style={styles.actionsNameRow}>
-                <Button
-                  title="Cambiar mi nombre"
-                  variant="outline"
-                  size="sm"
-                  onPress={() => {
-                    setEditedName(currentGuestName);
-                    setIsEditingName(true);
-                  }}
-                  style={styles.actionNameBtn}
-                />
-                <Button
-                  title="Salir de la mesa"
-                  variant="ghost"
-                  size="sm"
-                  onPress={() => {
-                    showCustomDialog(
-                      'Salir de la mesa',
-                      '¿Estás seguro que deseas salir de esta mesa?',
-                      [
-                        { text: 'Cancelar', variant: 'outline' },
-                        { text: 'Salir', variant: 'danger', onPress: onStartNewGuest }
-                      ]
-                    );
-                  }}
-                  style={styles.actionNameBtn}
-                />
-              </View>
-            )}
-          </Card>
-
-          <Card style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>Carta de Coctelería</Text>
-            <Text style={styles.sectionText}>
-              Presiona cualquier trago para agregarlo directamente a tu pedido:
-            </Text>
-            <DrinkGrid
-              recipes={recipes}
-              onSelectRecipe={(recipe) => {
-                if (recipe.id === 'piscola') {
-                  onSelectRecipe(recipe);
-                } else {
-                  onSelectRecipe(null);
-                  onAddCartItem(recipe, 1);
+            <Button
+              title="Agregar Piscola al carrito"
+              variant="primary"
+              onPress={() => {
+                if (!currentGuestName) {
+                  showCustomDialog(
+                    'Únete a la mesa',
+                    'Debes ingresar tu nombre e unirte a la mesa para comenzar a pedir tragos.',
+                    [{ text: 'Aceptar', variant: 'primary' }]
+                  );
+                  return;
                 }
+                onAddCartItem(selectedRecipe, 1);
+                onSelectRecipe(null);
               }}
-              recipeAvailability={recipeAvailability}
-              selectedRecipeId={selectedRecipe?.id}
+              style={styles.addCartBtn}
             />
+          </View>
+        )}
+      </Card>
 
-            {selectedRecipe?.id === 'piscola' && (
-              <View style={styles.recipeConfigContainer}>
-                <Text style={styles.configSubtitle}>¿Cómo prefieres tu Piscola?</Text>
-                <Text style={styles.configLabel}>Selecciona la intensidad de la combinación:</Text>
-                <View style={styles.intensityRow}>
-                  {(Object.keys(piscolaProfiles) as PiscolaIntensity[]).map((level) => (
-                    <Pressable
-                      key={level}
-                      style={[
-                        styles.intensityChip,
-                        piscolaIntensity === level && styles.intensityChipActive,
-                      ]}
-                      onPress={() => setPiscolaIntensity(level)}
-                    >
-                      <Text
-                        style={[
-                          styles.intensityChipText,
-                          piscolaIntensity === level && styles.intensityChipTextActive,
-                        ]}
-                      >
-                        {piscolaProfiles[level].label}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-                <Button
-                  title="Agregar Piscola al carrito"
-                  variant="primary"
-                  onPress={() => {
-                    onAddCartItem(selectedRecipe, 1);
-                    onSelectRecipe(null);
-                  }}
-                  style={styles.addCartBtn}
-                />
-              </View>
-            )}
-          </Card>
-
+      {!!currentGuestName && (
+        <>
           <Card style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>Tu pedido actual</Text>
             {cart.length === 0 ? (
@@ -456,7 +474,6 @@ export function UserPortalScreen({
             )}
           </Card>
 
-          {/* Pedir la cuenta card */}
           {activeOrders.length > 0 && (
             <Card style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>Total de la mesa</Text>
@@ -682,9 +699,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   countButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: Colors.surfaceHighlight,
     alignItems: 'center',
     justifyContent: 'center',
@@ -693,18 +710,22 @@ const styles = StyleSheet.create({
   },
   countButtonText: {
     color: Colors.text,
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '700',
   },
   countValue: {
     color: Colors.text,
     fontSize: 15,
     fontWeight: '800',
-    minWidth: 20,
+    minWidth: 24,
     textAlign: 'center',
   },
   removeButton: {
-    padding: 8,
+    padding: 12,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginLeft: 4,
   },
   totalSummary: {

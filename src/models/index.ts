@@ -107,6 +107,8 @@ export interface MachineSettings {
   dispense_speed_ml_s: number;
   ice_dispense_time_s: number;
   auto_clean_enabled: boolean;
+  pump_calibrations?: number[];
+  carriage_positions?: number[];
 }
 
 export interface SessionGuest {

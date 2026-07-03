@@ -11,6 +11,8 @@ import { commandQueueService } from '../services/CommandQueueService';
 import { useAppStore } from './AppStore';
 import { getSkippedSteps } from '../utils/preparation';
 import { deviceService } from '../services/DeviceService';
+import { useInventoryStore } from './InventoryStore';
+import { useRecipeStore } from './RecipeStore';
 
 type CreateOrderItemInput = {
   recipe: Recipe;
@@ -166,11 +168,13 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     const { machineState, isConnected } = useAppStore.getState();
     const state = get();
 
-    if (!isConnected || machineState.status !== 'idle') {
+    // No encolar el siguiente trago si la máquina no está ociosa, o si la bebida previa está lista esperando retiro
+    if (!isConnected || machineState.status !== 'idle' || machineState.isDrinkReady) {
       return false;
     }
 
-    if (state.orders.some((order) => order.status === 'preparing')) {
+    // Tampoco encolar si hay algún trago en preparación o listo esperando ser retirado (marcado como servido)
+    if (state.orders.some((order) => order.status === 'preparing' || order.status === 'ready')) {
       return false;
     }
 
@@ -255,6 +259,20 @@ export const useOrderStore = create<OrderState>((set, get) => ({
         active_step_id: undefined,
         finished_at: currentOrder.finished_at ?? Date.now(),
       };
+      
+      // Restablecer los ingredientes al inventario porque la preparación falló
+      try {
+        const recipe = useRecipeStore.getState().recipes.find((r) => r.id === currentOrder.recipe_id);
+        if (recipe) {
+          await useInventoryStore.getState().restoreForRecipe(recipe, {
+            iceCount: currentOrder.ice_count,
+            alcoholOz: currentOrder.alcohol_oz,
+            mixerOz: currentOrder.mixer_oz,
+          });
+        }
+      } catch (e) {
+        console.warn('[OrderStore] Failed to restore ingredients for failed order', e);
+      }
     }
 
     if (!hasOrderChanged(currentOrder, nextOrder)) {
@@ -297,6 +315,13 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       activeOrderId: state.activeOrderId === orderId ? null : state.activeOrderId,
     }));
     publishOrdersUpdate(order.table_number, get().orders);
+
+    // Enviar comando al ESP32 para informarle que la bebida ya fue retirada de la bandeja
+    await commandQueueService.enqueue({
+      cmd: 'TAKEN',
+      val: '',
+      target: 'kraken',
+    });
   },
   deleteOrder: async (orderId) => {
     const order = get().orders.find((entry) => entry.id === orderId);
@@ -310,6 +335,20 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       activeOrderId: state.activeOrderId === orderId ? null : state.activeOrderId,
     }));
     publishOrdersUpdate(order.table_number, get().orders);
+
+    // Restablecer ingredientes ya que la orden fue cancelada/eliminada
+    try {
+      const recipe = useRecipeStore.getState().recipes.find((r) => r.id === order.recipe_id);
+      if (recipe) {
+        await useInventoryStore.getState().restoreForRecipe(recipe, {
+          iceCount: order.ice_count,
+          alcoholOz: order.alcohol_oz,
+          mixerOz: order.mixer_oz,
+        });
+      }
+    } catch (e) {
+      console.warn('[OrderStore] Failed to restore ingredients for deleted order', e);
+    }
 
     await get().triggerNextQueuedOrder();
     return order;

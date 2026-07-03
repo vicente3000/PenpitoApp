@@ -122,7 +122,7 @@ export const Button = ({
             paddingVertical: 8,
             paddingHorizontal: 16,
             borderRadius: 12,
-            minHeight: 40,
+            minHeight: 44,
           },
           text: {
             fontSize: 13,

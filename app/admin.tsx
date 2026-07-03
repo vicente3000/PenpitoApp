@@ -32,6 +32,8 @@ export default function AdminRoute() {
   const [dispenseSpeedMlS, setDispenseSpeedMlS] = useState('');
   const [iceDispenseTimeS, setIceDispenseTimeS] = useState('');
   const [autoCleanEnabled, setAutoCleanEnabled] = useState(true);
+  const [pumpCalibrations, setPumpCalibrations] = useState<number[]>([]);
+  const [carriagePositions, setCarriagePositions] = useState<number[]>([]);
 
   const [settingsFeedback, setSettingsFeedback] = useState('');
   const [inventoryFeedback, setInventoryFeedback] = useState('');
@@ -45,6 +47,8 @@ export default function AdminRoute() {
       setDispenseSpeedMlS(String(settings.dispense_speed_ml_s));
       setIceDispenseTimeS(String(settings.ice_dispense_time_s));
       setAutoCleanEnabled(settings.auto_clean_enabled);
+      setPumpCalibrations(settings.pump_calibrations || [24.2, 23.1, 21.1, 24.0, 24.3, 15.9, 23.1]);
+      setCarriagePositions(settings.carriage_positions || [3600, 2600, 800, 100, 1860, 1600, 1350, 1200]);
     }
   }, [settings]);
 
@@ -57,7 +61,7 @@ export default function AdminRoute() {
     }
   };
 
-  const handleSaveSettings = async (overrideSpeed?: number) => {
+  const handleSaveSettings = async (overrideSpeed?: number, updatedCalibs?: number[], updatedPositions?: number[]) => {
     const nextDispenseSpeed = overrideSpeed !== undefined ? overrideSpeed : Number(dispenseSpeedMlS);
     const nextIceTime = Number(iceDispenseTimeS);
 
@@ -71,15 +75,31 @@ export default function AdminRoute() {
       return;
     }
 
+    const nextCalibs = updatedCalibs || pumpCalibrations;
+    const nextPositions = updatedPositions || carriagePositions;
+
     const nextSettings = {
       bottle_capacity_ml: 1000, // Hardcoded to 1L
       dispense_speed_ml_s: Number(nextDispenseSpeed.toFixed(1)),
       ice_dispense_time_s: Math.round(nextIceTime),
       auto_clean_enabled: autoCleanEnabled,
+      pump_calibrations: nextCalibs,
+      carriage_positions: nextPositions,
     };
 
     await updateSettings(nextSettings);
-    setSettingsFeedback('Parámetros guardados.');
+
+    // Sync calibrations with ESP32 via MQTT
+    if (isConnected) {
+      void deviceService.sendCommand({
+        cmd: 'SET_CALIB',
+        target: 'kraken',
+        rates: nextCalibs,
+        positions: nextPositions
+      } as any);
+    }
+
+    setSettingsFeedback('Parámetros guardados y sincronizados.');
     setTimeout(() => setSettingsFeedback(''), 3000);
   };
 
@@ -180,6 +200,10 @@ export default function AdminRoute() {
           esp32Feedback={esp32Feedback}
           setEsp32ConfigValue={setEsp32ConfigValue}
           onSendEsp32Config={handleSendEsp32Config}
+          pumpCalibrations={pumpCalibrations}
+          setPumpCalibrations={setPumpCalibrations}
+          carriagePositions={carriagePositions}
+          setCarriagePositions={setCarriagePositions}
         />
       )}
     </SafeAreaView>

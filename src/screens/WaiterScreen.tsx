@@ -3,6 +3,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -10,13 +11,13 @@ import { Colors } from '../constants/Colors';
 import { DrinkOrder, SessionGuest, TableSession } from '../models';
 import { useRecipeStore } from '../stores/RecipeStore';
 import { formatCurrency } from '../utils/drinkConfig';
-import { getOrderStatusLabel } from '../utils/preparation';
+import { getOrderStatusLabel, preparationSteps } from '../utils/preparation';
 import { formatTableLabel } from '../utils/tableQr';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Dialog, DialogAction } from '../components/ui/Dialog';
-import { PreparationTimeline } from '../components/PreparationTimeline';
 import { deviceService } from '../services/DeviceService';
+import { useAppStore } from '../stores/AppStore';
 
 function PressableCardEmergency({ onPress }: { onPress: () => void }) {
   return (
@@ -85,7 +86,17 @@ export function WaiterScreen({
   sessions,
 }: WaiterScreenProps) {
   const { recipes } = useRecipeStore();
+  const { machineState, isConnected } = useAppStore();
   const [dialogVisible, setDialogVisible] = useState(false);
+  const [billingTable, setBillingTable] = useState<{
+    tableNumber: number;
+    orders: DrinkOrder[];
+    session: TableSession | null;
+  } | null>(null);
+  const [paymentMode, setPaymentMode] = useState<'total' | 'split' | 'individual'>('total');
+  const [selectedPayee, setSelectedPayee] = useState<string | null>(null);
+  const [customTipPercentage, setCustomTipPercentage] = useState<number>(10);
+  const [splitCount, setSplitCount] = useState<number>(1);
   const [dialogConfig, setDialogConfig] = useState({
     title: '',
     message: '',
@@ -129,12 +140,34 @@ export function WaiterScreen({
     orders: DrinkOrder[];
     session: TableSession | null;
   }) => {
+    setBillingTable(table);
+    setPaymentMode('total');
+    setSelectedPayee(null);
+    setCustomTipPercentage(table.session?.tip_percentage ?? 10);
+    setSplitCount(table.session?.guests.length || 1);
+  };
+
+  const renderBillingDashboard = (table: {
+    tableNumber: number;
+    orders: DrinkOrder[];
+    session: TableSession | null;
+  }) => {
     const tableSubtotal = table.orders.reduce(
       (total, order) => total + getRecipePriceLocal(order.recipe_id),
       0
     );
-    const tableTipAmount = Math.round(tableSubtotal * 0.10);
+    const tableTipPercentage = customTipPercentage;
+    const tableTipAmount = Math.round(tableSubtotal * (tableTipPercentage / 100));
     const tableTotal = tableSubtotal + tableTipAmount;
+
+    const drinkCounts: Record<string, number> = {};
+    table.orders.forEach((o) => {
+      drinkCounts[o.recipe_name] = (drinkCounts[o.recipe_name] || 0) + 1;
+    });
+
+    const numGuests = table.session?.guests.length || 1;
+    const activeSplitCount = splitCount > 0 ? splitCount : 1;
+    const equalSplit = Math.round(tableTotal / activeSplitCount);
 
     const guestBreakdown: Record<string, number> = {};
     table.orders.forEach((order) => {
@@ -143,49 +176,269 @@ export function WaiterScreen({
       guestBreakdown[gName] = (guestBreakdown[gName] || 0) + price;
     });
 
-    const numGuests = table.session?.guests.length || 1;
-    const equalSplit = Math.round(tableTotal / numGuests);
+    const handleConfirmPayment = () => {
+      let confirmationMessage = '';
+      if (paymentMode === 'total') {
+        const payeeName = selectedPayee || 'Un cliente';
+        confirmationMessage = `${payeeName} pagó la cuenta completa de ${formatCurrency(tableTotal)}.`;
+      } else if (paymentMode === 'split') {
+        confirmationMessage = `La cuenta de ${formatCurrency(tableTotal)} se dividió en partes iguales (${splitCount} personas). Pago registrado.`;
+      } else {
+        confirmationMessage = `Se registraron los consumos individuales de la mesa. Pago registrado.`;
+      }
 
-    let message = `Subtotal Consumido: ${formatCurrency(tableSubtotal)}\n`;
-    message += `Propina Sugerida (10%): ${formatCurrency(tableTipAmount)}\n`;
-    message += `Total a Cobrar: ${formatCurrency(tableTotal)}\n\n`;
-    message += `══════ MÉTODOS DE PAGO ══════\n\n`;
-    message += `1. Cuenta Completa:\n`;
-    message += `   - Un pago único de ${formatCurrency(tableTotal)}\n\n`;
+      clearTableOrders(table.tableNumber);
+      clearTableSession(table.tableNumber);
+      setBillingTable(null);
+      setSelectedPayee(null);
 
-    if (numGuests > 1) {
-      message += `2. Partes Iguales (${numGuests} personas):\n`;
-      message += `   - ${formatCurrency(equalSplit)} por persona\n\n`;
-    }
+      showCustomDialog(
+        'Pago Registrado',
+        confirmationMessage,
+        [{ text: 'Aceptar', variant: 'primary' }]
+      );
+    };
 
-    message += `3. Consumo Individual (Consumo + 10% propina):\n`;
-    Object.entries(guestBreakdown).forEach(([guest, amount]) => {
-      const guestTip = Math.round(amount * 0.10);
-      const guestTotal = amount + guestTip;
-      message += `   - ${guest}: ${formatCurrency(guestTotal)} (Consumo: ${formatCurrency(amount)})\n`;
-    });
+    return (
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.topBar}>
+          <View>
+            <Text style={styles.eyebrow as any}>Cerrar Cuenta</Text>
+            <Text style={styles.sectionTitle as any}>{formatTableLabel(table.tableNumber)}</Text>
+          </View>
+          <Button
+            title="Volver"
+            variant="outline"
+            size="sm"
+            onPress={() => {
+              setBillingTable(null);
+              setSelectedPayee(null);
+            }}
+          />
+        </View>
 
-    showCustomDialog(
-      `Cobro de ${formatTableLabel(table.tableNumber)}`,
-      message,
-      [
-        { text: 'Volver', variant: 'outline' },
-        {
-          text: 'Registrar Pago y Cerrar Mesa',
-          variant: 'primary',
-          onPress: () => {
-            clearTableOrders(table.tableNumber);
-            clearTableSession(table.tableNumber);
-            setTimeout(() => {
-              showCustomDialog(
-                'Mesa cerrada',
-                `El pago de la ${formatTableLabel(table.tableNumber)} ha sido registrado. La mesa se liberó correctamente.`,
-                [{ text: 'Aceptar', variant: 'primary' }]
-              );
-            }, 500);
-          }
-        }
-      ]
+        <Card style={styles.sectionCard as any}>
+          <Text style={styles.groupTitle as any}>Detalle de Consumo</Text>
+          <View style={{ marginTop: 8 }}>
+            {Object.entries(drinkCounts).map(([name, count]) => (
+              <View key={name} style={styles.billingItemRow}>
+                <Text style={styles.billingItemName}>{count}x {name}</Text>
+                <Text style={styles.billingItemPrice}>
+                  {formatCurrency(count * getRecipePriceLocal(table.orders.find((o) => o.recipe_name === name)?.recipe_id || ''))}
+                </Text>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.billingDivider} />
+
+          <View style={styles.summaryBreakdownRow}>
+            <Text style={styles.summaryBreakdownLabel as any}>Subtotal</Text>
+            <Text style={styles.summaryBreakdownValue as any}>{formatCurrency(tableSubtotal)}</Text>
+          </View>
+          <View style={styles.summaryBreakdownRow}>
+            <Text style={styles.summaryBreakdownLabel as any}>Propina ({tableTipPercentage}%)</Text>
+            <Text style={styles.summaryBreakdownValue as any}>{formatCurrency(tableTipAmount)}</Text>
+          </View>
+          <View style={styles.summaryBreakdownRow}>
+            <Text style={styles.summaryBreakdownTotalLabel as any}>Total General</Text>
+            <Text style={styles.summaryBreakdownTotalValue as any}>{formatCurrency(tableTotal)}</Text>
+          </View>
+        </Card>
+
+        <Card style={styles.sectionCard as any}>
+          <Text style={styles.groupTitle as any}>Propina de la Mesa</Text>
+          <Text style={styles.sectionText}>Selecciona el porcentaje de propina a aplicar:</Text>
+          
+          <View style={styles.paymentModeTabs}>
+            <Button
+              key="tip-0"
+              title="Sin Propina (0%)"
+              variant={customTipPercentage === 0 ? 'secondary' : 'outline'}
+              size="sm"
+              onPress={() => setCustomTipPercentage(0)}
+              style={styles.tabBtn}
+            />
+            <Button
+              key="tip-10"
+              title="Sugerida (10%)"
+              variant={customTipPercentage === 10 ? 'secondary' : 'outline'}
+              size="sm"
+              onPress={() => setCustomTipPercentage(10)}
+              style={styles.tabBtn}
+            />
+            <Button
+              key="tip-15"
+              title="Excelente (15%)"
+              variant={customTipPercentage === 15 ? 'secondary' : 'outline'}
+              size="sm"
+              onPress={() => setCustomTipPercentage(15)}
+              style={styles.tabBtn}
+            />
+          </View>
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12, justifyContent: 'space-between' }}>
+            <Text style={{ fontSize: 15, color: Colors.text, fontWeight: '600' }}>Otro Porcentaje:</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TextInput
+                keyboardType="numeric"
+                style={styles.tipInput}
+                value={String(customTipPercentage)}
+                onChangeText={(val) => {
+                  const clean = val.replace(/[^0-9]/g, '');
+                  const parsed = Number(clean);
+                  if (!isNaN(parsed) && parsed >= 0) {
+                    setCustomTipPercentage(parsed);
+                  } else if (clean === '') {
+                    setCustomTipPercentage(0);
+                  }
+                }}
+              />
+              <Text style={{ fontSize: 16, color: Colors.text, marginLeft: 8, fontWeight: 'bold' }}>%</Text>
+            </View>
+          </View>
+        </Card>
+
+        <Card style={styles.sectionCard as any}>
+          <Text style={styles.groupTitle as any}>Método de Pago (Asignado por Garzón)</Text>
+          <Text style={styles.sectionText}>Selecciona cómo se dividirá o cancelará la cuenta:</Text>
+
+          <View style={styles.paymentModeTabs}>
+            <Button
+              title="Pago Único"
+              variant={paymentMode === 'total' ? 'primary' : 'outline'}
+              size="sm"
+              onPress={() => setPaymentMode('total')}
+              style={styles.tabBtn}
+            />
+            <Button
+              title="Partes Iguales"
+              variant={paymentMode === 'split' ? 'primary' : 'outline'}
+              size="sm"
+              onPress={() => setPaymentMode('split')}
+              style={styles.tabBtn}
+            />
+            <Button
+              title="Individual"
+              variant={paymentMode === 'individual' ? 'primary' : 'outline'}
+              size="sm"
+              onPress={() => setPaymentMode('individual')}
+              style={styles.tabBtn}
+            />
+          </View>
+
+          {paymentMode === 'total' && (
+            <View style={{ marginTop: 16 }}>
+              <Text style={styles.inputLabel}>Selecciona el cliente responsable de toda la cuenta:</Text>
+              {table.session?.guests.length ? (
+                <View style={{ gap: 8, marginTop: 8 }}>
+                  {table.session.guests.map((guest) => {
+                    const isSelected = selectedPayee === guest.name;
+                    return (
+                      <Button
+                        key={guest.id}
+                        title={guest.name}
+                        variant={isSelected ? 'secondary' : 'outline'}
+                        size="sm"
+                        onPress={() => setSelectedPayee(guest.name)}
+                        style={{ alignSelf: 'stretch' }}
+                      />
+                    );
+                  })}
+                </View>
+              ) : (
+                <Text style={styles.emptyText as any}>No hay clientes registrados en esta mesa.</Text>
+              )}
+
+              {selectedPayee && (
+                <Text style={[styles.successBanner, { marginTop: 12 }]}>
+                  💡 {selectedPayee} pagará la cuenta completa de {formatCurrency(tableTotal)}
+                </Text>
+              )}
+            </View>
+          )}
+
+          {paymentMode === 'split' && (
+            <View style={{ marginTop: 16 }}>
+              <Text style={styles.inputLabel}>División Equitativa</Text>
+              <Text style={styles.sectionText}>
+                Selecciona la cantidad de personas para dividir la cuenta de la mesa:
+              </Text>
+              
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginVertical: 12, gap: 10, justifyContent: 'center' }}>
+                <Button
+                  key="split-minus"
+                  title="-"
+                  variant="outline"
+                  onPress={() => setSplitCount(Math.max(1, splitCount - 1))}
+                  style={{ width: 44, height: 44, minHeight: 44, paddingHorizontal: 0, justifyContent: 'center', alignItems: 'center' }}
+                />
+                <Text style={{ fontSize: 20, fontWeight: 'bold', color: Colors.text, width: 40, textAlign: 'center' }}>
+                  {splitCount}
+                </Text>
+                <Button
+                  key="split-plus"
+                  title="+"
+                  variant="outline"
+                  onPress={() => setSplitCount(splitCount + 1)}
+                  style={{ width: 44, height: 44, minHeight: 44, paddingHorizontal: 0, justifyContent: 'center', alignItems: 'center' }}
+                />
+              </View>
+
+              <Text style={styles.splitAmountText}>
+                {formatCurrency(equalSplit)} / persona
+              </Text>
+            </View>
+          )}
+
+          {paymentMode === 'individual' && (
+            <View style={{ marginTop: 16 }}>
+              <Text style={styles.inputLabel}>Consumo por Cliente</Text>
+              <View style={{ gap: 12, marginTop: 8 }}>
+                {Object.entries(guestBreakdown).map(([guest, amount]) => {
+                  const guestTip = Math.round(amount * (tableTipPercentage / 100));
+                  const guestTotal = amount + guestTip;
+                  return (
+                    <View key={guest} style={styles.individualGuestRow}>
+                      <View>
+                        <Text style={styles.individualGuestName}>{guest}</Text>
+                        <Text style={styles.individualGuestMeta}>Consumo: {formatCurrency(amount)} + Propina</Text>
+                      </View>
+                      <Text style={styles.individualGuestTotal}>{formatCurrency(guestTotal)}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+        </Card>
+
+        <Button
+          title="Registrar Pago y Cerrar Mesa"
+          variant="primary"
+          disabled={paymentMode === 'total' && !selectedPayee}
+          onPress={handleConfirmPayment}
+          style={{ backgroundColor: Colors.success, borderColor: Colors.success, marginVertical: 12 } as any}
+        />
+
+        <Button
+          title="Cancelar y Volver"
+          variant="outline"
+          onPress={() => {
+            setBillingTable(null);
+            setSelectedPayee(null);
+          }}
+          style={{ marginBottom: 40 }}
+        />
+
+        <Dialog
+          visible={dialogVisible}
+          title={dialogConfig.title}
+          message={dialogConfig.message}
+          actions={dialogConfig.actions}
+          onClose={() => setDialogVisible(false)}
+        />
+      </ScrollView>
     );
   };
 
@@ -203,10 +456,44 @@ export function WaiterScreen({
     .filter((table) => table.orders.length > 0 || (table.session?.guests.length ?? 0) > 0)
     .sort((a, b) => a.tableNumber - b.tableNumber);
 
+  if (billingTable) {
+    return renderBillingDashboard(billingTable);
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scrollContent}>
-      {/* Persistant Emergency Stop Banner */}
-      <PressableCardEmergency onPress={handleEmergencyStop} />
+      {/* Persistant Emergency Stop Banner or Reactivation Banner */}
+      {!machineState.isOn ? (
+        <Card style={[styles.emergencyCard, { backgroundColor: 'rgba(239, 68, 68, 0.08)', borderColor: Colors.error }] as any}>
+          <View style={styles.emergencyRow}>
+            <FontAwesome name="exclamation-triangle" size={24} color={Colors.error} />
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={{ fontSize: 16, fontWeight: 'bold', color: Colors.text }}>Máquina APAGADA</Text>
+              <Text style={{ fontSize: 12, color: Colors.textMuted, marginTop: 2 }}>
+                La corriente está desactivada por seguridad o parada de emergencia.
+              </Text>
+            </View>
+            <Button
+              title="Encender"
+              variant="primary"
+              size="sm"
+              onPress={async () => {
+                const success = await deviceService.sendCommand({ cmd: 'POWER', val: 'ON', target: 'kraken' });
+                if (success) {
+                  showCustomDialog(
+                    'Máquina Encendida',
+                    'Se ha reactivado la corriente y reiniciado la máquina con éxito.',
+                    [{ text: 'Aceptar', variant: 'primary' }]
+                  );
+                }
+              }}
+              style={{ backgroundColor: Colors.success, borderColor: Colors.success, minHeight: 32, paddingHorizontal: 12 } as any}
+            />
+          </View>
+        </Card>
+      ) : (
+        <PressableCardEmergency onPress={handleEmergencyStop} />
+      )}
 
       <View style={styles.topBar}>
         <View>
@@ -253,7 +540,18 @@ export function WaiterScreen({
                 </View>
               )}
               <View style={styles.tableHeader}>
-                <Text style={styles.tableTitle as any}>{formatTableLabel(table.tableNumber)}</Text>
+                <Text style={styles.tableTitle as any}>
+                  {formatTableLabel(table.tableNumber)}
+                  {table.orders.filter(o => o.status !== 'served').length > 0 ? (
+                    <Text style={{ fontSize: 14, fontWeight: 'normal', color: Colors.warning }}>
+                      {` (${table.orders.filter(o => o.status !== 'served').length} pendientes)`}
+                    </Text>
+                  ) : (
+                    <Text style={{ fontSize: 14, fontWeight: 'normal', color: Colors.success }}>
+                      {` (Sin pendientes)`}
+                    </Text>
+                  )}
+                </Text>
                 <Button
                   title="Cobrar Mesa"
                   variant="primary"
@@ -313,42 +611,27 @@ export function WaiterScreen({
                 )}
               </View>
 
-              {table.orders.length > 0 && (
-                <View style={styles.billSummaryCard}>
-                  <View style={styles.summaryBreakdownRow}>
-                    <Text style={styles.summaryBreakdownLabel as any}>Subtotal</Text>
-                    <Text style={styles.summaryBreakdownValue as any}>{formatCurrency(tableSubtotal)}</Text>
-                  </View>
-                  <View style={styles.summaryBreakdownRow}>
-                    <Text style={styles.summaryBreakdownLabel as any}>Propina ({tableTipPercentage}%)</Text>
-                    <Text style={styles.summaryBreakdownValue as any}>{formatCurrency(tableTipAmount)}</Text>
-                  </View>
-                  <View style={styles.summaryBreakdownRow}>
-                    <Text style={styles.summaryBreakdownTotalLabel as any}>Total a cobrar</Text>
-                    <Text style={styles.summaryBreakdownTotalValue as any}>{formatCurrency(tableTotal)}</Text>
-                  </View>
-                </View>
-              )}
+              {/* Ocultado detalle de cuenta de la mesa activa en la pantalla general */}
 
               <View style={styles.ordersList}>
-                {table.orders.map((order) => (
+                {table.orders.filter((order) => order.status !== 'served').map((order) => (
                   <View key={order.id} style={styles.waiterOrderCard}>
                     <View style={styles.waiterOrderInfo}>
                       <Text style={styles.orderTitle as any}>{order.recipe_name}</Text>
                       <Text style={styles.orderMeta as any}>
                         {order.guest_name ? `${order.guest_name} · ` : ''}
-                        {order.status === 'queued' ? 'En cola' : getOrderStatusLabel(order.status)}
+                        {order.status === 'queued' && 'En cola'}
+                        {order.status === 'served' && 'Servido'}
+                        {order.status === 'failed' && <Text style={{ color: Colors.error }}>No completado</Text>}
+                        {order.status === 'ready' && (
+                          <Text style={{ color: Colors.success, fontWeight: '800' }}>Listo para servir</Text>
+                        )}
+                        {order.status === 'preparing' && (
+                          <Text style={{ color: Colors.warning, fontWeight: '800' }}>
+                            {`Preparando · ${preparationSteps.find(s => s.id === order.active_step_id)?.title || 'Iniciando'}`}
+                          </Text>
+                        )}
                       </Text>
-                      {(order.status === 'preparing' || order.status === 'ready') && (
-                        <View style={styles.timelineWrap}>
-                          <PreparationTimeline
-                            activeStepId={order.active_step_id}
-                            completedStepIds={order.completed_step_ids}
-                            skippedStepIds={order.skipped_step_ids}
-                            isReady={order.is_drink_ready}
-                          />
-                        </View>
-                      )}
                     </View>
                     <View style={styles.orderActions}>
                       {order.status === 'ready' && (
@@ -650,5 +933,105 @@ const styles = StyleSheet.create({
     minHeight: 34,
     paddingHorizontal: 12,
     borderRadius: 10,
+  },
+  billingItemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceHighlight,
+  },
+  billingItemName: {
+    fontSize: 16,
+    color: Colors.text,
+    fontWeight: '500',
+  },
+  billingItemPrice: {
+    fontSize: 16,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  billingDivider: {
+    height: 1.5,
+    backgroundColor: Colors.border,
+    marginVertical: 14,
+  },
+  paymentModeTabs: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: 12,
+  },
+  tabBtn: {
+    flex: 1,
+  },
+  splitAmountText: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: Colors.primary,
+    textAlign: 'center',
+    marginVertical: 16,
+    padding: 12,
+    backgroundColor: Colors.surfaceHighlight,
+    borderRadius: 16,
+  },
+  successBanner: {
+    padding: 12,
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderColor: Colors.success,
+    borderWidth: 1,
+    borderRadius: 16,
+    color: Colors.success,
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  individualGuestRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: Colors.surfaceHighlight,
+    borderRadius: 16,
+  },
+  individualGuestName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: Colors.text,
+  },
+  individualGuestMeta: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    marginTop: 2,
+  },
+  individualGuestTotal: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: Colors.primary,
+  },
+  tipInput: {
+    backgroundColor: Colors.surfaceHighlight,
+    borderWidth: 1.2,
+    borderColor: Colors.border,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: 'bold',
+    width: 80,
+    textAlign: 'center',
+  },
+  sectionText: {
+    color: Colors.textMuted,
+    fontSize: 14,
+    marginBottom: 12,
+    lineHeight: 20,
+  },
+  inputLabel: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 6,
+    marginTop: 10,
   },
 });

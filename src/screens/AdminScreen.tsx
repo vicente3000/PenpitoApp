@@ -7,6 +7,8 @@ import {
   View,
   Switch,
   Pressable,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Colors } from '../constants/Colors';
@@ -47,7 +49,7 @@ export interface AdminScreenProps {
   onBack: () => void;
   onMarkServed: (orderId: string) => void;
   onRefillBottle: (bottleId: string) => void;
-  onSaveSettings: (overrideSpeed?: number) => void;
+  onSaveSettings: (overrideSpeed?: number, updatedCalibs?: number[], updatedPositions?: number[]) => void;
   orders: DrinkOrder[];
   preparingOrders: DrinkOrder[];
   readyOrders: DrinkOrder[];
@@ -61,6 +63,10 @@ export interface AdminScreenProps {
   esp32Feedback: string;
   setEsp32ConfigValue: (deviceId: Esp32DeviceKey, field: keyof Esp32WifiConfig, value: string) => void;
   onSendEsp32Config: (deviceId: Esp32DeviceKey) => void;
+  pumpCalibrations: number[];
+  setPumpCalibrations: React.Dispatch<React.SetStateAction<number[]>>;
+  carriagePositions: number[];
+  setCarriagePositions: React.Dispatch<React.SetStateAction<number[]>>;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,6 +96,10 @@ export function AdminScreen({
   esp32Feedback,
   setEsp32ConfigValue,
   onSendEsp32Config,
+  pumpCalibrations,
+  setPumpCalibrations,
+  carriagePositions,
+  setCarriagePositions,
 }: AdminScreenProps) {
   const { recipes, updateRecipePrice } = useRecipeStore();
   const [recipePrices, setRecipePrices] = useState<Record<string, string>>({});
@@ -130,6 +140,94 @@ export function AdminScreen({
   const [stirring, setStirring] = useState(false);
   const [localFeedback, setLocalFeedback] = useState('');
 
+  const [localCalibs, setLocalCalibs] = useState<string[]>([]);
+  const [localPositions, setLocalPositions] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (pumpCalibrations && pumpCalibrations.length > 0) {
+      setLocalCalibs(pumpCalibrations.map(String));
+    }
+  }, [pumpCalibrations]);
+
+  useEffect(() => {
+    if (carriagePositions && carriagePositions.length > 0) {
+      setLocalPositions(carriagePositions.map(String));
+    }
+  }, [carriagePositions]);
+
+  const handleSaveCalibrations = () => {
+    const parsedCalibs = localCalibs.map(Number);
+    const parsedPositions = localPositions.map(Number);
+
+    if (parsedCalibs.some(isNaN) || parsedCalibs.some(c => c <= 0)) {
+      setCalibFeedback('Los caudales de las bombas deben ser números válidos mayores a 0.');
+      return;
+    }
+    if (parsedPositions.some(isNaN) || parsedPositions.some(p => p < 0 || p > 4000)) {
+      setCalibFeedback('Las posiciones de riel deben ser números válidos entre 0 y 4000.');
+      return;
+    }
+
+    setPumpCalibrations(parsedCalibs);
+    setCarriagePositions(parsedPositions);
+    onSaveSettings(undefined, parsedCalibs, parsedPositions);
+    setCalibFeedback('Calibraciones guardadas y sincronizadas.');
+    setTimeout(() => setCalibFeedback(''), 4000);
+  };
+
+  const handleTestPumpCalib = async (pumpIdx: number) => {
+    const pumpNum = pumpIdx + 1;
+    setLocalFeedback(`Preparando prueba para Bomba ${pumpNum}...`);
+    
+    // Automatically position the carriage at the pump's coordinates
+    const targetPos = getPumpPosition(pumpNum);
+    setLocalFeedback(`Posicionando carro en ${targetPos} pasos para Bomba ${pumpNum}...`);
+    
+    const moveSuccess = await deviceService.sendCommand({
+      cmd: 'TEST_HW',
+      target: 'kraken',
+      type: 'motor_abs',
+      val: targetPos
+    } as any);
+
+    if (!moveSuccess) {
+      setLocalFeedback('Error al posicionar el carro. Operación de prueba cancelada.');
+      return;
+    }
+
+    await sleep(2500);
+    setLocalFeedback(`Ejecutando Bomba ${pumpNum} por 10 segundos...`);
+    
+    const pumpSuccess = await deviceService.sendCommand({
+      cmd: 'TEST_HW',
+      target: 'kraken',
+      type: 'pump',
+      pin: pumpNum,
+      duration: 10000
+    } as any);
+
+    if (pumpSuccess) {
+      setLocalFeedback(`Prueba de Bomba ${pumpNum} finalizada. Mide la cantidad en ml y usa la calculadora.`);
+      setTestPumpNum(String(pumpNum));
+    } else {
+      setLocalFeedback(`Error al activar la Bomba ${pumpNum}.`);
+    }
+  };
+
+  const handleApplyCalculatedFlow = () => {
+    const pIdx = Number(testPumpNum) - 1;
+    const ml = Number(grams10s);
+    if (pIdx < 0 || pIdx > 6 || isNaN(ml) || ml <= 0 || ml > 500) {
+      setCalibFeedback('Ingresa una bomba válida (1-7) y cantidad obtenida válida.');
+      return;
+    }
+    const newRate = Number((ml / 10.0).toFixed(1));
+    const nextCalibs = [...localCalibs];
+    nextCalibs[pIdx] = String(newRate);
+    setLocalCalibs(nextCalibs);
+    setCalibFeedback(`Caudal de Bomba ${pIdx + 1} actualizado localmente a ${newRate} ml/s. Presiona Guardar.`);
+  };
+
   // Sync internal recipe price fields
   useEffect(() => {
     const prices: Record<string, string> = {};
@@ -154,12 +252,92 @@ export function AdminScreen({
     ]);
   };
 
+  const getPumpPosition = (pumpNum: number): number => {
+    if (pumpNum === 1 || pumpNum === 2) return 1860;
+    if (pumpNum === 3 || pumpNum === 4) return 1600;
+    if (pumpNum === 5 || pumpNum === 6) return 1350;
+    if (pumpNum === 7) return 1200;
+    return 1860;
+  };
+
   const handleSendTestHw = async (payload: {
     type: 'pump' | 'servo' | 'servo_cont' | 'motor' | 'motor_home' | 'full_test' | 'dry_test' | 'motor_abs' | 'vaso_test' | 'hielo_test' | 'cuchara_test';
     pin?: number;
     val?: number;
     duration?: number;
   }) => {
+    // 1. Validations
+    if (payload.type === 'pump') {
+      const pin = payload.pin ?? 1;
+      if (pin < 1 || pin > 7) {
+        showCustomDialog('Límite de seguridad', 'El número de bomba debe ser entre 1 y 7.', [
+          { text: 'Aceptar', variant: 'outline' }
+        ]);
+        return;
+      }
+      if (payload.duration && (payload.duration < 100 || payload.duration > 30000)) {
+        showCustomDialog('Límite de seguridad', 'La duración debe estar entre 100ms y 30s.', [
+          { text: 'Aceptar', variant: 'outline' }
+        ]);
+        return;
+      }
+
+      // Automatically position the carriage before activating the pump
+      const targetPos = getPumpPosition(pin);
+      setLocalFeedback(`Posicionando carro en ${targetPos} pasos para Bomba ${pin}...`);
+      const moveSuccess = await deviceService.sendCommand({
+        cmd: 'TEST_HW',
+        target: 'kraken',
+        type: 'motor_abs',
+        val: targetPos
+      } as any);
+
+      if (!moveSuccess) {
+        setLocalFeedback('Error al posicionar el carro. Operación cancelada.');
+        return;
+      }
+
+      // Wait 2.5 seconds for the carriage to reach the target position
+      await sleep(2500);
+    }
+
+    if (payload.type === 'servo') {
+      const pin = payload.pin ?? 1;
+      if (pin < 1 || pin > 3) {
+        showCustomDialog('Límite de seguridad', 'El número de servo debe ser entre 1 y 3 (1: Vaso, 2: Hielo A, 3: Hielo B).', [
+          { text: 'Aceptar', variant: 'outline' }
+        ]);
+        return;
+      }
+      const angle = payload.val ?? 0;
+      if (angle < 0 || angle > 180) {
+        showCustomDialog('Límite de seguridad', 'El ángulo del servo debe estar entre 0° y 180°.', [
+          { text: 'Aceptar', variant: 'outline' }
+        ]);
+        return;
+      }
+    }
+
+    if (payload.type === 'motor') {
+      const steps = payload.val ?? 0;
+      if (steps < -2000 || steps > 2000) {
+        showCustomDialog('Límite de seguridad', 'Los pasos relativos del motor deben estar entre -2000 y 2000.', [
+          { text: 'Aceptar', variant: 'outline' }
+        ]);
+        return;
+      }
+    }
+
+    if (payload.type === 'motor_abs') {
+      const pos = payload.val ?? 0;
+      if (pos < 0 || pos > 4000) {
+        showCustomDialog('Límite de seguridad', 'La posición absoluta del motor debe estar entre 0 y 4000 pasos.', [
+          { text: 'Aceptar', variant: 'outline' }
+        ]);
+        return;
+      }
+    }
+
     setLocalFeedback(`Enviando comando: ${payload.type}...`);
     const success = await deviceService.sendCommand({
       cmd: 'TEST_HW',
@@ -176,8 +354,8 @@ export function AdminScreen({
 
   const handleCalculateFlow = () => {
     const grams = Number(grams10s);
-    if (isNaN(grams) || grams <= 0) {
-      setCalibFeedback("Ingresa un valor válido en gramos/ml obtenido.");
+    if (isNaN(grams) || grams <= 0 || grams > 200) {
+      setCalibFeedback("Ingresa un valor válido entre 1 y 200 gramos/ml.");
       return;
     }
     const flow = grams / 10.0;
@@ -191,8 +369,13 @@ export function AdminScreen({
     const a1 = Number(attempt1);
     const a2 = Number(attempt2);
     const a3 = Number(attempt3);
-    if (isNaN(a1) || isNaN(a2) || isNaN(a3) || a1 <= 0 || a2 <= 0 || a3 <= 0) {
-      setCalibFeedback("Ingresa valores válidos para los 3 intentos.");
+    if (
+      isNaN(a1) || isNaN(a2) || isNaN(a3) ||
+      a1 <= 0 || a1 > 200 ||
+      a2 <= 0 || a2 > 200 ||
+      a3 <= 0 || a3 > 200
+    ) {
+      setCalibFeedback("Ingresa valores válidos entre 1 y 200 ml para los 3 intentos.");
       return;
     }
 
@@ -416,7 +599,12 @@ export function AdminScreen({
   }, [orders]);
 
   return (
-    <ScrollView contentContainerStyle={styles.scrollContent}>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={{ flex: 1 }}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+    >
+      <ScrollView contentContainerStyle={styles.scrollContent}>
       {/* Emergency Stop Banner */}
       <Card style={styles.emergencyCard} glow>
         <View style={styles.emergencyRow}>
@@ -545,41 +733,136 @@ export function AdminScreen({
         ))}
       </Card>
 
+
+
       <Card style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>Parámetros de Ingeniería</Text>
+        <Text style={styles.sectionTitle}>Calibración de Caudal de Bombas</Text>
+        <Text style={styles.sectionText}>Configura el caudal (ml por segundo) para cada bomba individualmente:</Text>
 
-        <Text style={styles.inputLabel}>Velocidad de dispensado (ml/s)</Text>
-        <TextInput
-          keyboardType="numeric"
-          style={styles.input}
-          value={dispenseSpeedMlS}
-          onChangeText={setDispenseSpeedMlS}
-        />
+        {localCalibs.map((rate, idx) => {
+          const pumpNames = [
+            'B1 (Pisco)',
+            'B2 (Amaretto)',
+            'B3 (Gin)',
+            'B4 (Coca-Cola)',
+            'B5 (Vermut Rosso)',
+            'B6 (Whisky)',
+            'B7 (Campari)',
+          ];
+          return (
+            <View key={idx} style={styles.priceEditRow}>
+              <Text style={styles.priceEditLabel}>{pumpNames[idx] || `Bomba ${idx + 1}`}</Text>
+              <View style={styles.priceEditInputWrap}>
+                <TextInput
+                  keyboardType="numeric"
+                  style={styles.priceEditInput}
+                  value={rate}
+                  onChangeText={(val) => {
+                    const next = [...localCalibs];
+                    next[idx] = val;
+                    setLocalCalibs(next);
+                  }}
+                />
+                <Button
+                  title="Test 10s"
+                  variant="outline"
+                  size="sm"
+                  onPress={() => handleTestPumpCalib(idx)}
+                  style={styles.priceSaveBtn}
+                />
+              </View>
+            </View>
+          );
+        })}
 
-        <Text style={styles.inputLabel}>Tiempo de dispensador de hielo (s)</Text>
-        <TextInput
-          keyboardType="numeric"
-          style={styles.input}
-          value={iceDispenseTimeS}
-          onChangeText={setIceDispenseTimeS}
-        />
+        {/* CALCULADORA DE CAUDAL INTEGRADA */}
+        <View style={[styles.hwTestBlock, { marginTop: 20, backgroundColor: Colors.surfaceHighlight, padding: 12, borderRadius: 16 }]}>
+          <Text style={styles.hwBlockTitle}>Calculadora de Flujo R385</Text>
+          <Text style={styles.sectionText}>Usa esta sección después del test de 10s para actualizar el caudal medido:</Text>
+          
+          <View style={styles.attemptsRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.inputLabel}>Bomba (1-7)</Text>
+              <TextInput
+                keyboardType="numeric"
+                style={styles.input}
+                value={testPumpNum}
+                onChangeText={setTestPumpNum}
+              />
+            </View>
+            <View style={{ flex: 1.5, marginLeft: 10 }}>
+              <Text style={styles.inputLabel}>ml obtenidos en 10s</Text>
+              <TextInput
+                keyboardType="numeric"
+                style={styles.input}
+                placeholder="Ej: 240"
+                value={grams10s}
+                onChangeText={setGrams10s}
+              />
+            </View>
+          </View>
 
-        <View style={styles.switchRow}>
-          <Text style={styles.switchLabel}>Limpieza Automática</Text>
-          <Switch
-            trackColor={{ false: Colors.surfaceHighlight, true: Colors.primaryGlow }}
-            thumbColor={autoCleanEnabled ? Colors.primary : Colors.textMuted}
-            value={autoCleanEnabled}
-            onValueChange={setAutoCleanEnabled}
+          <Button
+            title="Aplicar Caudal a la Bomba"
+            variant="secondary"
+            size="sm"
+            onPress={handleApplyCalculatedFlow}
+            style={{ marginTop: 10 }}
           />
         </View>
+      </Card>
 
-        {settingsFeedback ? <Text style={styles.feedbackText}>{settingsFeedback}</Text> : null}
+      <Card style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>Calibración de Posiciones del Riel</Text>
+        <Text style={styles.sectionText}>Configura las coordenadas (pasos desde Home) para cada estación física:</Text>
+
+        {localPositions.map((pos, idx) => {
+          const positionLabels = [
+            'Vasos (POS_CUP)',
+            'Hielo (POS_ICE)',
+            'Agitador (POS_STIR)',
+            'Listo (POS_READY)',
+            'Pisco/Amaretto (B1-B2)',
+            'Gin/Mixer (B3-B4)',
+            'Vermut/Whisky (B5-B6)',
+            'Campari (B7)',
+          ];
+          return (
+            <View key={idx} style={styles.priceEditRow}>
+              <Text style={styles.priceEditLabel}>{positionLabels[idx] || `Estación ${idx + 1}`}</Text>
+              <View style={styles.priceEditInputWrap}>
+                <TextInput
+                  keyboardType="numeric"
+                  style={styles.priceEditInput}
+                  value={pos}
+                  onChangeText={(val) => {
+                    const next = [...localPositions];
+                    next[idx] = val;
+                    setLocalPositions(next);
+                  }}
+                />
+                <Button
+                  title="Mover"
+                  variant="outline"
+                  size="sm"
+                  onPress={() => handleSendTestHw({
+                    type: 'motor_abs',
+                    val: Number(pos)
+                  })}
+                  style={styles.priceSaveBtn}
+                />
+              </View>
+            </View>
+          );
+        })}
+
+        {calibFeedback ? <Text style={styles.calibFeedbackText}>{calibFeedback}</Text> : null}
+        
         <Button
-          title="Guardar Parámetros"
+          title="Guardar y Sincronizar Calibración"
           variant="primary"
-          onPress={() => onSaveSettings()}
-          style={styles.saveSettingsBtn}
+          onPress={handleSaveCalibrations}
+          style={[styles.saveSettingsBtn, { marginTop: 16 }]}
         />
       </Card>
 
@@ -590,127 +873,6 @@ export function AdminScreen({
         {localFeedback ? (
           <Text style={styles.localFeedbackText}>{localFeedback}</Text>
         ) : null}
-
-        {/* CALIBRACIÓN BOMBAS R385 */}
-        <View style={styles.hwTestBlock}>
-          <Text style={styles.hwBlockTitle}>Calibración de Bombas R385</Text>
-          <Text style={styles.sectionText}>Las bombas R385 requieren medir los gramos o mililitros dispensados en 10 segundos para calcular el flujo exacto de 1 oz (30ml).</Text>
-          
-          <Text style={styles.inputLabel}>Número de Bomba (1-7)</Text>
-          <TextInput
-            keyboardType="numeric"
-            style={styles.input}
-            placeholder="1"
-            value={testPumpNum}
-            onChangeText={setTestPumpNum}
-          />
-          
-          <View style={styles.rowButtons}>
-            <Button
-              title="Iniciar 10s de Calibración"
-              variant="outline"
-              size="sm"
-              onPress={() => {
-                setCalibFeedback("Encendiendo bomba por 10 segundos...");
-                void handleSendTestHw({
-                  type: 'pump',
-                  pin: Number(testPumpNum),
-                  duration: 10000
-                });
-              }}
-              style={styles.rowBtn}
-            />
-          </View>
-
-          <Text style={styles.inputLabel}>Gramos / ml obtenidos en 10 segundos</Text>
-          <TextInput
-            keyboardType="numeric"
-            style={styles.input}
-            placeholder="Ej: 35"
-            value={grams10s}
-            onChangeText={setGrams10s}
-          />
-
-          <Button
-            title="Calcular Flujo y Estimar 30ml"
-            variant="secondary"
-            size="sm"
-            onPress={handleCalculateFlow}
-            style={styles.moveBtn}
-          />
-
-          {calculatedFlowRate !== null && calculatedTime30ml !== null && (
-            <View style={styles.calibResultBlock}>
-              <Text style={styles.calibResultText}>
-                Flujo Calculado: {calculatedFlowRate.toFixed(2)} ml/s
-              </Text>
-              <Text style={styles.calibResultText}>
-                Tiempo para 1 oz (30ml): {calculatedTime30ml.toFixed(2)} s
-              </Text>
-              <Button
-                title="Dispensar 30ml de prueba"
-                variant="outline"
-                size="sm"
-                onPress={() => {
-                  setCalibFeedback("Probando dispensación de 30ml...");
-                  void handleSendTestHw({
-                    type: 'pump',
-                    pin: Number(testPumpNum),
-                    duration: Math.round(calculatedTime30ml * 1000)
-                  });
-                }}
-                style={[styles.moveBtn, { marginTop: 10 }]}
-              />
-            </View>
-          )}
-
-          {/* Ajuste fino */}
-          <Text style={[styles.hwBlockTitle, { marginTop: 18 }]}>Ajuste Fino Promediado (3 Intentos)</Text>
-          <Text style={styles.sectionText}>Registra lo obtenido en 3 dispensaciones consecutivas de 30ml de prueba:</Text>
-
-          <View style={styles.attemptsRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Intento 1 (ml)</Text>
-              <TextInput
-                keyboardType="numeric"
-                style={styles.input}
-                placeholder="30"
-                value={attempt1}
-                onChangeText={setAttempt1}
-              />
-            </View>
-            <View style={{ flex: 1, marginHorizontal: 6 }}>
-              <Text style={styles.inputLabel}>Intento 2 (ml)</Text>
-              <TextInput
-                keyboardType="numeric"
-                style={styles.input}
-                placeholder="30"
-                value={attempt2}
-                onChangeText={setAttempt2}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Intento 3 (ml)</Text>
-              <TextInput
-                keyboardType="numeric"
-                style={styles.input}
-                placeholder="30"
-                value={attempt3}
-                onChangeText={setAttempt3}
-              />
-            </View>
-          </View>
-
-          <Button
-            title="Calcular Ajuste de Riel y Guardar"
-            variant="primary"
-            size="sm"
-            onPress={handleAjustarVelocidad}
-            style={styles.moveBtn}
-          />
-
-          {calibFeedback ? <Text style={styles.calibFeedbackText}>{calibFeedback}</Text> : null}
-        </View>
 
         {/* SERVOS */}
         <View style={styles.hwTestBlock}>
@@ -992,7 +1154,8 @@ export function AdminScreen({
         actions={dialogConfig.actions}
         onClose={() => setDialogVisible(false)}
       />
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

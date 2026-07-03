@@ -25,6 +25,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           dispense_speed_ml_s: 15,
           ice_dispense_time_s: 2,
           auto_clean_enabled: true,
+          pump_calibrations: [24.2, 23.1, 21.1, 24.0, 24.3, 15.9, 23.1],
+          carriage_positions: [3600, 2600, 800, 100, 1860, 1600, 1350, 1200],
         };
         await settingsRepository.saveSettings(currentSettings);
       }

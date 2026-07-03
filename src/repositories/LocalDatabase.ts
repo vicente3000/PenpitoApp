@@ -157,7 +157,9 @@ async function applySchema(db: DbHandle) {
       bottle_capacity_ml INTEGER NOT NULL,
       dispense_speed_ml_s REAL NOT NULL,
       ice_dispense_time_s INTEGER NOT NULL,
-      auto_clean_enabled INTEGER NOT NULL
+      auto_clean_enabled INTEGER NOT NULL,
+      pump_calibrations TEXT,
+      carriage_positions TEXT
     );
 
     CREATE TABLE IF NOT EXISTS inventory (
@@ -216,7 +218,16 @@ async function ensureOrderColumns(db: DbHandle) {
 }
 
 async function ensureSettingsColumns(db: DbHandle) {
-  // Price columns are no longer needed on settings table.
+  try {
+    await db.execAsync(`ALTER TABLE settings ADD COLUMN pump_calibrations TEXT`);
+  } catch {
+    // Column already exists
+  }
+  try {
+    await db.execAsync(`ALTER TABLE settings ADD COLUMN carriage_positions TEXT`);
+  } catch {
+    // Column already exists
+  }
 }
 
 async function ensureInventoryColumns(db: DbHandle) {
@@ -378,4 +389,14 @@ export const initDb = async () => {
   }
 
   await initPromise;
+};
+
+export const resetDatabase = async () => {
+  const db = await getDb();
+  await db.execAsync(`
+    DELETE FROM orders;
+  `);
+  await db.execAsync(`DELETE FROM inventory;`);
+  await seedInventory(db);
+  console.log('[LocalDatabase] Database reset complete');
 };

@@ -3,11 +3,13 @@ import { create } from 'zustand';
 import { BottleInventory, DrinkPreparationOptions, Recipe } from '../models';
 import { inventoryRepository } from '../repositories/InventoryRepository';
 import { canPrepareRecipe, getInventoryShortage, getRecipeUsageMl } from '../utils/drinkConfig';
+import { deviceService } from '../services/DeviceService';
 
 interface InventoryState {
   inventory: BottleInventory[];
   isLoading: boolean;
   error: string | null;
+  isSubscribed: boolean;
   loadInventory: () => Promise<void>;
   refillBottle: (id: string) => Promise<void>;
   updateBottleCapacity: (id: string, capacityMl: number) => Promise<void>;
@@ -26,15 +28,42 @@ interface InventoryState {
   }>;
 }
 
+const publishInventoryUpdate = (inventory: BottleInventory[]) => {
+  try {
+    deviceService.publish('penpito/inventory/state', JSON.stringify(inventory));
+  } catch (e) {
+    console.warn('[InventoryStore] Failed to publish inventory update:', e);
+  }
+};
+
 export const useInventoryStore = create<InventoryState>((set, get) => ({
   inventory: [],
   isLoading: false,
   error: null,
+  isSubscribed: false,
   loadInventory: async () => {
     set({ isLoading: true, error: null });
     try {
       const inventory = await inventoryRepository.getAllBottles();
       set({ inventory, isLoading: false });
+
+      if (!get().isSubscribed) {
+        set({ isSubscribed: true });
+        deviceService.subscribeCustom('penpito/inventory/state', async (payload) => {
+          try {
+            const remoteInventory = JSON.parse(payload) as BottleInventory[];
+            if (Array.isArray(remoteInventory) && remoteInventory.length > 0) {
+              for (const remoteBottle of remoteInventory) {
+                await inventoryRepository.saveBottle(remoteBottle);
+              }
+              const localInventory = await inventoryRepository.getAllBottles();
+              set({ inventory: localInventory });
+            }
+          } catch (e) {
+            console.warn('[InventoryStore] Error parsing remote inventory update:', e);
+          }
+        });
+      }
     } catch (error) {
       set({ error: 'Failed to load inventory', isLoading: false });
     }
@@ -44,6 +73,7 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
       await inventoryRepository.refillBottle(id);
       const inventory = await inventoryRepository.getAllBottles();
       set({ inventory });
+      publishInventoryUpdate(inventory);
     } catch (error) {
       set({ error: 'Failed to refill bottle' });
     }
@@ -53,6 +83,7 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
       await inventoryRepository.updateBottleCapacity(id, capacityMl);
       const inventory = await inventoryRepository.getAllBottles();
       set({ inventory });
+      publishInventoryUpdate(inventory);
     } catch (error) {
       set({ error: 'Failed to update bottle capacity' });
     }
@@ -63,6 +94,7 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
       await inventoryRepository.consumeIngredients(usages);
       const inventory = await inventoryRepository.getAllBottles();
       set({ inventory });
+      publishInventoryUpdate(inventory);
     } catch (error) {
       set({ error: 'Failed to update inventory after preparation' });
     }
@@ -73,6 +105,7 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
       await inventoryRepository.restoreIngredients(usages);
       const inventory = await inventoryRepository.getAllBottles();
       set({ inventory });
+      publishInventoryUpdate(inventory);
     } catch (error) {
       set({ error: 'Failed to restore inventory after cancelled order' });
     }
