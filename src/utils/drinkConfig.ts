@@ -20,20 +20,20 @@ export const piscolaProfiles: Record<
 > = {
   suave: {
     alcoholOz: 2.0,
-    mixerOz: 8.5,
-    defaultIceCount: 5,
+    mixerOz: 7.0, // Reducido de 8.5 (255ml) a 7.0 (210ml)
+    defaultIceCount: 3, // Cambiado a 3
     label: 'Suave',
   },
   normal: {
     alcoholOz: 3.0,
-    mixerOz: 7.5,
-    defaultIceCount: 4,
+    mixerOz: 6.0, // Reducido de 7.5 (225ml) a 6.0 (180ml)
+    defaultIceCount: 3, // Cambiado a 3
     label: 'Normal',
   },
   fuerte: {
     alcoholOz: 4.5,
-    mixerOz: 6.5,
-    defaultIceCount: 3,
+    mixerOz: 5.0, // Reducido de 6.5 (195ml) a 5.0 (150ml)
+    defaultIceCount: 3, // Cambiado a 3
     label: 'Fuerte',
   },
 };
@@ -59,15 +59,7 @@ export function formatCurrency(amount: number) {
 }
 
 export function getDefaultIceCount(recipeId: string, intensity: PiscolaIntensity = 'normal') {
-  if (recipeId === 'piscola') {
-    return piscolaProfiles[intensity].defaultIceCount;
-  }
-
-  if (recipeId === 'whisky_rocks' || recipeId === 'negroni' || recipeId === 'gin_tonic') {
-    return 4;
-  }
-
-  return 0;
+  return 3;
 }
 
 export function getRecipeUsageMl(recipe: Recipe, options: DrinkPreparationOptions = {}) {

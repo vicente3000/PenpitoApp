@@ -112,6 +112,7 @@ export function AdminScreen({
   const [testServoNum, setTestServoNum] = useState('1');
   const [testServoAngle, setTestServoAngle] = useState('90');
   const [testMotorSteps, setTestMotorSteps] = useState('100');
+  const [testMotorAbsPos, setTestMotorAbsPos] = useState('1000');
   
   // Spoon travel and stir custom durations
   const [spoonTravelTimeMs, setSpoonTravelTimeMs] = useState('2500');
@@ -154,7 +155,7 @@ export function AdminScreen({
   };
 
   const handleSendTestHw = async (payload: {
-    type: 'pump' | 'servo' | 'servo_cont' | 'motor' | 'motor_home' | 'full_test';
+    type: 'pump' | 'servo' | 'servo_cont' | 'motor' | 'motor_home' | 'full_test' | 'dry_test' | 'motor_abs' | 'vaso_test' | 'hielo_test' | 'cuchara_test';
     pin?: number;
     val?: number;
     duration?: number;
@@ -849,7 +850,7 @@ export function AdminScreen({
           />
           <View style={styles.rowButtons}>
             <Button
-              title="Mover Pasos"
+              title="Mover (Relativo)"
               variant="outline"
               size="sm"
               onPress={() => handleSendTestHw({
@@ -868,21 +869,81 @@ export function AdminScreen({
               style={styles.rowBtn}
             />
           </View>
+
+          <Text style={[styles.inputLabel, { marginTop: 12 }]}>Ir a Posición Absoluta (Pasos desde Home)</Text>
+          <TextInput
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="1000"
+            value={testMotorAbsPos}
+            onChangeText={setTestMotorAbsPos}
+          />
+          <Button
+            title="Mover a Posición Absoluta"
+            variant="outline"
+            size="sm"
+            onPress={() => handleSendTestHw({
+              type: 'motor_abs',
+              val: Number(testMotorAbsPos)
+            })}
+            style={{ marginTop: 4 }}
+          />
+        </View>
+
+        {/* PRUEBAS INDIVIDUALES DE MÓDULOS */}
+        <View style={styles.hwTestBlock}>
+          <Text style={styles.hwBlockTitle}>Prueba de Módulos Individuales</Text>
+          <Text style={styles.sectionText}>Prueba cada mecanismo de forma aislada en su posición física actual sin mover el carro.</Text>
+          <View style={{ gap: 8, marginTop: 8 }}>
+            <Button
+              title="Probar Módulo Vaso"
+              variant="outline"
+              size="sm"
+              onPress={() => handleSendTestHw({
+                type: 'vaso_test'
+              })}
+            />
+            <Button
+              title="Probar Módulo Hielo"
+              variant="outline"
+              size="sm"
+              onPress={() => handleSendTestHw({
+                type: 'hielo_test'
+              })}
+            />
+            <Button
+              title="Probar Módulo Cuchara"
+              variant="outline"
+              size="sm"
+              onPress={() => handleSendTestHw({
+                type: 'cuchara_test'
+              })}
+            />
+          </View>
         </View>
 
         {/* PRUEBA COMPLETA DE MÁQUINA */}
         <View style={styles.hwTestBlock}>
           <Text style={styles.hwBlockTitle}>Prueba de Máquina Completa (MX)</Text>
           <Text style={styles.sectionText}>Ejecuta la secuencia de diagnóstico completa de forma inalámbrica (vaso, cuchara, hielo, bombas y retorno final a home).</Text>
-          <Button
-            title="Iniciar Secuencia Completa (MX)"
-            variant="primary"
-            size="sm"
-            onPress={() => handleSendTestHw({
-              type: 'full_test'
-            })}
-            style={{ marginTop: 8 }}
-          />
+          <View style={{ gap: 8, marginTop: 8 }}>
+            <Button
+              title="Iniciar Secuencia Completa (Con Agua)"
+              variant="primary"
+              size="sm"
+              onPress={() => handleSendTestHw({
+                type: 'full_test'
+              })}
+            />
+            <Button
+              title="Iniciar Recorrido en Seco (Sin Agua)"
+              variant="secondary"
+              size="sm"
+              onPress={() => handleSendTestHw({
+                type: 'dry_test'
+              })}
+            />
+          </View>
         </View>
       </Card>
 
