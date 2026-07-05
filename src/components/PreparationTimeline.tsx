@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from 'react';
-import { ActivityIndicator, Animated, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Colors, Shadows } from '../constants/Colors';
 import { PreparationStepId } from '../models';
@@ -7,43 +8,66 @@ import { getPreparationProgress, preparationSteps } from '../utils/preparation';
 
 type PreparationTimelineProps = {
   activeStepId?: PreparationStepId;
-  completedStepIds: PreparationStepId[];
-  skippedStepIds: PreparationStepId[];
-  isReady: boolean;
+  completedStepIds?: PreparationStepId[] | null;
+  skippedStepIds?: PreparationStepId[] | null;
+  isReady?: boolean;
+  isLoading?: boolean;
 };
 
 export function PreparationTimeline({
   activeStepId,
-  completedStepIds,
-  skippedStepIds,
-  isReady,
+  completedStepIds = [],
+  skippedStepIds = [],
+  isReady = false,
+  isLoading = false,
 }: PreparationTimelineProps) {
-  const progress = useRef(new Animated.Value(0)).current;
+  const safeCompleted = completedStepIds || [];
+  const safeSkipped = skippedStepIds || [];
+  const targetProgress = getPreparationProgress(safeCompleted, activeStepId, isReady);
+
+  const progress = useSharedValue(0);
 
   useEffect(() => {
-    Animated.timing(progress, {
-      toValue: getPreparationProgress(completedStepIds, activeStepId, isReady),
-      duration: 450,
-      useNativeDriver: false,
-    }).start();
-  }, [activeStepId, completedStepIds, isReady, progress]);
+    progress.value = withTiming(targetProgress, { duration: 450 });
+  }, [targetProgress, progress]);
 
-  const widthInterpolation = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0%', '100%'],
+  const animatedProgressStyle = useAnimatedStyle(() => {
+    return {
+      width: `${progress.value * 100}%`,
+    };
   });
+
+  if (isLoading || !completedStepIds) {
+    return (
+      <View style={styles.wrapper}>
+        <View style={[styles.progressTrack, { backgroundColor: Colors.border }]} />
+        <View style={styles.list}>
+          {preparationSteps.map((step) => (
+            <View key={step.id} style={[styles.card, { opacity: 0.5 }]}>
+              <View style={[styles.iconWrap, { backgroundColor: Colors.border, borderColor: 'transparent' }]} />
+              <View style={styles.content}>
+                <View style={{ width: 60, height: 10, backgroundColor: Colors.border, borderRadius: 4, marginBottom: 6 }} />
+                <View style={{ width: 140, height: 14, backgroundColor: Colors.border, borderRadius: 4 }} />
+              </View>
+              <ActivityIndicator size="small" color={Colors.textMuted} />
+            </View>
+          ))}
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.wrapper}>
       <View style={styles.progressTrack}>
-        <Animated.View style={[styles.progressFill, { width: widthInterpolation }]} />
+        <Animated.View style={[styles.progressFill, animatedProgressStyle]} />
       </View>
 
       <View style={styles.list}>
         {preparationSteps.map((step, index) => {
           const isActive = activeStepId === step.id && !isReady;
-          const isCompleted = completedStepIds.includes(step.id) || (isReady && step.id === 'ready');
-          const isSkipped = skippedStepIds.includes(step.id);
+          const isCompleted = safeCompleted.includes(step.id) || (isReady && step.id === 'ready');
+          const isSkipped = safeSkipped.includes(step.id);
 
           return (
             <View

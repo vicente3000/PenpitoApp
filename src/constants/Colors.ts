@@ -1,4 +1,4 @@
-export const Colors = {
+const basePalette = {
   background: '#f8fafc',
   surface: '#ffffff',
   surfaceHighlight: '#f1f5f9',
@@ -12,7 +12,27 @@ export const Colors = {
   error: '#ef4444',
   text: '#0f172a',
   textMuted: '#64748b',
+  tint: '#d97706',
+  tabIconDefault: '#64748b',
+  tabIconSelected: '#d97706',
 };
+
+export const Colors = {
+  ...basePalette,
+  light: {
+    ...basePalette,
+  },
+  dark: {
+    ...basePalette,
+    text: '#ffffff',
+    background: '#0f172a',
+    tint: '#f59e0b',
+    tabIconDefault: '#64748b',
+    tabIconSelected: '#f59e0b',
+  },
+};
+
+export default Colors;
 
 export const Shadows = {
   glowPrimary: {

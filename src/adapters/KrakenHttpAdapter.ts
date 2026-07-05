@@ -21,7 +21,7 @@ function getKrakenBaseUrl() {
 
 export class KrakenHttpAdapter implements ICommunicationAdapter {
   private isConnected = false;
-  private stateChangeCallback: ((state: MachineState) => void) | null = null;
+  private stateListeners = new Set<(state: MachineState) => void>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private currentState: MachineState = initialState;
   private readonly baseUrl: string;
@@ -92,9 +92,12 @@ export class KrakenHttpAdapter implements ICommunicationAdapter {
     }
   }
 
-  onStateChange(callback: (state: MachineState) => void): void {
-    this.stateChangeCallback = callback;
-    this.fireStateChange();
+  onStateChange(callback: (state: MachineState) => void): () => void {
+    this.stateListeners.add(callback);
+    callback({ ...this.currentState });
+    return () => {
+      this.stateListeners.delete(callback);
+    };
   }
 
   private startPolling() {
@@ -147,8 +150,6 @@ export class KrakenHttpAdapter implements ICommunicationAdapter {
   }
 
   private fireStateChange() {
-    if (this.stateChangeCallback) {
-      this.stateChangeCallback({ ...this.currentState });
-    }
+    this.stateListeners.forEach((cb) => cb({ ...this.currentState }));
   }
 }

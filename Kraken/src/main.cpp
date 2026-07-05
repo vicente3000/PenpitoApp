@@ -18,12 +18,8 @@ const int MQTT_PORT = 1883;
 const char *TOPIC_STATE = "penpito/kraken/state";
 const char *TOPIC_COMMAND = "penpito/kraken/command";
 const char *TOPIC_ACK = "penpito/kraken/command/ack";
+const char *TOPIC_PRESENCE = "penpito/kraken/presence";
 
-// ═══════════════════════════════════════════
-//  MODO DE PRUEBA / SIMULACIÓN
-// ═══════════════════════════════════════════
-const bool SIMULAR_MOTOR =
-    false; // Cambiado a 'false' para mover el motor físico NEMA17
 
 // CONSTANTES DE CALIBRACIÓN DE LA CUCHARA (Ajustar con el panel de calibración
 // de la app)
@@ -42,13 +38,13 @@ const int NUM_BOMBAS = 7;
 
 // Calibraciones pregrabadas según tus medidas (ml por segundo)
 float b_ml_ps[7] = {
-    24.2, // B1 (Pisco): 24.2 ml/s
-    23.1, // B2 (Amaretto): 23.1 ml/s
-    21.1, // B3 (Gin): 21.1 ml/s
-    24.0, // B4 (Coca-Cola, swap): 24.0 ml/s (GPIO 25)
-    24.3, // B5 (Vermut Rosso): 24.3 ml/s
-    15.9, // B6 (Whisky): 15.9 ml/s
-    23.1  // B7 (Campari, swap): 23.1 ml/s (GPIO 33)
+    24.7, // B1 (Pisco): 24.7 ml/s
+    23.6, // B2 (Amaretto): 23.6 ml/s
+    20.6, // B3 (Gin): 20.6 ml/s
+    24.3, // B4 (Coca-Cola, swap): 24.3 ml/s (GPIO 25)
+    23.8, // B5 (Vermut Rosso): 23.8 ml/s
+    16.1, // B6 (Whisky): 16.1 ml/s
+    23.6  // B7 (Campari, swap): 23.6 ml/s (GPIO 33)
 };
 unsigned long pump_stop_time[7] = {
     0}; // Tiempos de apagado no bloqueante para bombas
@@ -160,7 +156,41 @@ Preferences preferences;
 unsigned long last_state_publish = 0;
 unsigned long last_reconnect_attempt = 0;
 
+struct CachedRequest {
+  String id;
+  bool ok;
+  String errorMessage;
+};
+CachedRequest lastRequests[5];
+int lastRequestIdIdx = 0;
+
+bool in_mqtt_callback = false;
+
+// Variables y declaraciones para movimiento de motor no bloqueante
+bool is_motor_moving = false;
+int motor_target_steps = 0;
+int motor_step_dir = 0;
+unsigned long next_motor_step_micros = 0;
+bool motor_starting_from_limit = false;
+int motor_steps_done = 0;
+bool motor_move_error = false;
+
+bool is_homing = false;
+int home_substate = 0; // 0=idle, 1=pre-clearing, 2=searching
+unsigned long next_home_step_micros = 0;
+int home_steps_taken = 0;
+
+bool pendingClean = false;
+bool pendingTest = false;
+String pendingTestType = "";
+int pendingTestVal = 0;
+int pendingTestPin = 0;
+int pendingTestDuration = 0;
+
 // Declaraciones de funciones
+void smartDelay(unsigned long ms);
+void cacheRequestResult(const String &id, bool ok, const String &errorMsg);
+int getCachedRequestIdx(const String &id);
 void setupHardware();
 void setupWifi();
 void reconnect();
@@ -180,6 +210,10 @@ bool is_limit_pressed();
 bool motor_steps(int n);
 bool home();
 bool mover_a(int target);
+void serviceMotorMovement();
+void serviceHomeMovement();
+void wait_motor_done();
+void executeTestHardware(const String &type, int val, int pin, int duration);
 void handleMovementError(const String &msg);
 void test_maquina_completa();
 void test_maquina_seco();
@@ -205,14 +239,15 @@ void setup() {
 }
 
 void loop() {
-  // Conexión no bloqueante a MQTT
+  // Conexión no bloqueante a MQTT y Wi-Fi
   if (WiFi.status() == WL_CONNECTED) {
     if (!client.connected()) {
       unsigned long now = millis();
       if (now - last_reconnect_attempt > 5000) {
         last_reconnect_attempt = now;
-        if (client.connect("PenpitoKrakenDevice")) {
+        if (client.connect("PenpitoKrakenDevice", nullptr, nullptr, TOPIC_PRESENCE, 1, true, "offline")) {
           client.subscribe(TOPIC_COMMAND);
+          client.publish(TOPIC_PRESENCE, "online", true);
           Serial.println("MQTT Conectado.");
           publishState();
         }
@@ -220,35 +255,76 @@ void loop() {
     } else {
       client.loop();
     }
+  } else {
+    static unsigned long last_wifi_reconnect_attempt = 0;
+    unsigned long now = millis();
+    if (now - last_wifi_reconnect_attempt > 10000) {
+      last_wifi_reconnect_attempt = now;
+      Serial.println("Wi-Fi desconectado. Reintentando conexion...");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    }
   }
 
   // 1. Control del tiempo de apagado de Bombas (No bloqueante)
   unsigned long now = millis();
   for (int i = 0; i < NUM_BOMBAS; i++) {
     if (pump_stop_time[i] > 0) {
-      if (now >= pump_stop_time[i]) {
+      if (!isOn || now >= pump_stop_time[i]) {
         digitalWrite(B_PIN[i], LOW);
         pump_stop_time[i] = 0;
-        Serial.print("Bomba ");
-        Serial.print(i + 1);
-        Serial.println(" OFF (Tiempo completado)");
+        if (!isOn) {
+          Serial.print("Bomba ");
+          Serial.print(i + 1);
+          Serial.println(" OFF (E-STOP)");
+        } else {
+          Serial.print("Bomba ");
+          Serial.print(i + 1);
+          Serial.println(" OFF (Tiempo completado)");
+        }
       }
+    }
+  }
+
+  if (status == STATUS_CLEANING) {
+    bool any_pump_running = false;
+    for (int i = 0; i < NUM_BOMBAS; i++) {
+      if (pump_stop_time[i] > 0) any_pump_running = true;
+    }
+    if (!any_pump_running) {
+      Serial.println("Limpieza terminada. Volviendo a reposo.");
+      status = STATUS_IDLE;
+      publishState();
     }
   }
 
   // 1b. Control del tiempo de apagado del servo continuo (No bloqueante)
   if (srv_cont_stop_time > 0) {
-    if (now >= srv_cont_stop_time) {
+    if (!isOn || now >= srv_cont_stop_time) {
       servo_cont_set(0);
       srv_cont_stop_time = 0;
-      Serial.println("Servo continuo OFF (Tiempo completado)");
+      Serial.println("Servo continuo OFF (Tiempo completado / E-STOP)");
     }
   }
+
+  // 1c. Actualización del motor de pasos y home (No bloqueante)
+  serviceMotorMovement();
+  serviceHomeMovement();
 
   // Si hay una preparación pendiente, la iniciamos fuera del callback de MQTT
   if (pendingPrepare) {
     pendingPrepare = false;
     startPreparation(pendingRecipeId, pendingIceCount, pendingAlcoholOz, pendingMixerOz);
+  }
+
+  if (pendingClean) {
+    pendingClean = false;
+    startCleaning();
+  }
+
+  if (pendingTest) {
+    pendingTest = false;
+    executeTestHardware(pendingTestType, pendingTestVal, pendingTestPin, pendingTestDuration);
   }
 
   // 2. Máquina de estados de preparación
@@ -315,6 +391,7 @@ void setupHardware() {
   for (int i = 0; i < 7; i++) {
     String key = "b_ml_" + String(i);
     b_ml_ps[i] = preferences.getFloat(key.c_str(), b_ml_ps[i]);
+    if (b_ml_ps[i] < 0.5) b_ml_ps[i] = 15.0;
   }
   preferences.end();
 
@@ -342,6 +419,33 @@ void setupWifi() {
   } else {
     Serial.println("\nNo se pudo conectar a WiFi, operando sin conexion.");
   }
+}
+
+void smartDelay(unsigned long ms) {
+  unsigned long start = millis();
+  while (millis() - start < ms) {
+    if (!in_mqtt_callback && client.connected()) {
+      client.loop();
+    }
+    if (in_mqtt_callback && !isOn) {
+      break;
+    }
+    delay(5);
+  }
+}
+
+void cacheRequestResult(const String &id, bool ok, const String &errorMsg) {
+  if (id.length() == 0) return;
+  lastRequests[lastRequestIdIdx] = {id, ok, errorMsg};
+  lastRequestIdIdx = (lastRequestIdIdx + 1) % 5;
+}
+
+int getCachedRequestIdx(const String &id) {
+  if (id.length() == 0) return -1;
+  for (int i = 0; i < 5; i++) {
+    if (lastRequests[i].id == id) return i;
+  }
+  return -1;
 }
 
 // ═══════════════════════════════════════════
@@ -381,6 +485,128 @@ bool is_limit_pressed() {
 }
 
 int motor_pos = 0;
+
+void serviceMotorMovement() {
+  if (!is_motor_moving) return;
+
+  if (!isOn) {
+    Serial.println("!!! Movimiento DETENIDO por POWER OFF / E-STOP !!!");
+    is_motor_moving = false;
+    motor_stop();
+    motor_move_error = true;
+    return;
+  }
+
+  unsigned long now_u = micros();
+  if (now_u < next_motor_step_micros) return;
+
+  if (motor_step_dir < 0 && motor_pos < 300 && (limit_triggered || is_limit_pressed())) {
+    Serial.println("!!! Movimiento DETENIDO por FIN DE CARRERA (Limit Switch) !!!");
+    is_motor_moving = false;
+    motor_stop();
+    limit_triggered = false;
+    return;
+  }
+
+  digitalWrite(MOTOR_STEP, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(MOTOR_STEP, LOW);
+  motor_pos += motor_step_dir;
+  motor_steps_done++;
+  next_motor_step_micros = micros() + 3000;
+
+  if (motor_steps_done >= motor_target_steps) {
+    if (motor_starting_from_limit && is_limit_pressed()) {
+      Serial.println("!!! ERROR CRITICO DE SEGURIDAD: El motor no logro despegarse del interruptor de Home. !!!");
+      is_motor_moving = false;
+      motor_stop();
+      motor_move_error = true;
+      return;
+    }
+    Serial.print("Movimiento completado con exito. Posicion actual: ");
+    Serial.println(motor_pos);
+    is_motor_moving = false;
+    motor_stop();
+    if (status == STATUS_PREPARING && step_in_progress) {
+      step_timer = millis() + 500;
+    }
+  }
+}
+
+void serviceHomeMovement() {
+  if (!is_homing) return;
+
+  if (!isOn) {
+    Serial.println("!!! HOME DETENIDO por POWER OFF / E-STOP !!!");
+    is_homing = false;
+    motor_stop();
+    return;
+  }
+
+  unsigned long now_u = micros();
+  if (now_u < next_home_step_micros) return;
+
+  if (home_substate == 1) { // Pre-clearing
+    digitalWrite(MOTOR_STEP, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(MOTOR_STEP, LOW);
+    home_steps_taken++;
+    next_home_step_micros = micros() + 3000;
+
+    if (!is_limit_pressed() || home_steps_taken >= 500) {
+      Serial.print("Sensor liberado tras ");
+      Serial.print(home_steps_taken);
+      Serial.println(" pasos.");
+      home_substate = 2;
+      home_steps_taken = 0;
+      digitalWrite(MOTOR_DIR, LOW);
+      next_home_step_micros = micros() + 100000;
+    }
+  } else if (home_substate == 2) { // Searching
+    if (limit_triggered || is_limit_pressed()) {
+      digitalWrite(MOTOR_STEP, LOW);
+      motor_pos = 0;
+      limit_triggered = false;
+      is_homing = false;
+      home_substate = 0;
+      motor_stop();
+      Serial.println("Home completado con éxito.");
+      if (status == STATUS_PREPARING && step_in_progress) {
+        step_timer = millis() + 500;
+      }
+      return;
+    }
+
+    digitalWrite(MOTOR_STEP, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(MOTOR_STEP, LOW);
+    home_steps_taken++;
+    next_home_step_micros = micros() + 3000;
+
+    if (home_steps_taken > 6000) {
+      Serial.println("!!! ERROR DE SEGURIDAD: Home no encontrado despues de 6000 pasos. Driver apagado o motor atascado. !!!");
+      is_homing = false;
+      home_substate = 0;
+      motor_stop();
+      motor_move_error = true;
+    }
+  }
+}
+
+void wait_motor_done() {
+  while (is_motor_moving || is_homing) {
+    if (!isOn) {
+      motor_stop();
+      is_motor_moving = false;
+      is_homing = false;
+      break;
+    }
+    serviceMotorMovement();
+    serviceHomeMovement();
+    delay(1);
+  }
+}
+
 bool motor_steps(int n) {
   if (n == 0) {
     Serial.println("motor_steps: 0 pasos requeridos. Retornando.");
@@ -390,101 +616,40 @@ bool motor_steps(int n) {
   digitalWrite(MOTOR_ENABLE, LOW); // Activar bobinas
   delayMicroseconds(10);
 
-  bool completed = true;
-  bool starting_from_limit = is_limit_pressed() && (n > 0);
-
-  for (int i = 0; i < abs(n); i++) {
-    // Solo detenemos por limit switch si nos estamos moviendo hacia atrás (n < 0)
-    // Y además estamos físicamente cerca de la posición 0/Home (motor_pos < 300).
-    // Esto evita que el ruido electromagnético de los motores cause falsas paradas en el trayecto.
-    if (n < 0 && motor_pos < 300 && (limit_triggered || is_limit_pressed())) {
-      Serial.println(
-          "!!! Movimiento DETENIDO por FIN DE CARRERA (Limit Switch) !!!");
-      motor_stop();
-      limit_triggered = false;
-      completed = false;
-      break;
-    }
-    motor_step();
-    motor_pos += (n > 0) ? 1 : -1;
-  }
-
-  // Verificación de despegue físico del carro: si salimos del switch y tras 150
-  // pasos sigue presionado, significa que el carro no se movió (driver apagado,
-  // motor trabado o correa rota).
-  if (starting_from_limit && is_limit_pressed()) {
-    Serial.println("!!! ERROR CRITICO DE SEGURIDAD: El motor no logro "
-                   "despegarse del interruptor de Home. !!!");
-    motor_stop();
-    return false;
-  }
-
-  if (completed) {
-    Serial.print("Movimiento completado con exito. Posicion actual: ");
-    Serial.println(motor_pos);
-  }
-  motor_stop(); // Deshabilitar bobinas para evitar sobrecalentamiento del
-                // driver A4988
-  return completed;
+  is_motor_moving = true;
+  motor_target_steps = abs(n);
+  motor_step_dir = (n > 0) ? 1 : -1;
+  motor_steps_done = 0;
+  motor_move_error = false;
+  motor_starting_from_limit = is_limit_pressed() && (n > 0);
+  next_motor_step_micros = micros() + 10;
+  return true;
 }
 
 bool home() {
-  Serial.println("Buscando Home...");
+  Serial.println("Buscando Home (No bloqueante)...");
   limit_triggered = false;
-
-  // Pre-clearing: Si el fin de carrera ya está presionado, nos movemos
-  // hacia adelante hasta liberarlo para evitar un falso home instantáneo.
+  is_homing = true;
+  home_steps_taken = 0;
+  motor_move_error = false;
   if (is_limit_pressed()) {
     Serial.println("Sensor ya presionado al iniciar Home. Liberando...");
+    home_substate = 1; // pre-clearing
     digitalWrite(MOTOR_DIR, HIGH); // Mover adelante
-    digitalWrite(MOTOR_ENABLE, LOW);
-    delayMicroseconds(10);
-    int clear_steps = 0;
-    while (is_limit_pressed() && clear_steps < 500) {
-      motor_step();
-      clear_steps++;
-      delay(2);
-    }
-    delay(200);
-    Serial.print("Sensor liberado tras ");
-    Serial.print(clear_steps);
-    Serial.println(" pasos.");
+  } else {
+    home_substate = 2; // searching
+    digitalWrite(MOTOR_DIR, LOW); // Hacia Home
   }
-
-  digitalWrite(MOTOR_DIR, LOW);
   digitalWrite(MOTOR_ENABLE, LOW);
-  delayMicroseconds(10);
-
-  int pasos_dados = 0;
-  const int MAX_PASOS_BUSQUEDA = 6000; // Recorrido máximo total + margen seguro
-
-  while (!limit_triggered && !is_limit_pressed()) {
-    motor_step();
-    pasos_dados++;
-    if (pasos_dados > MAX_PASOS_BUSQUEDA) {
-      Serial.println("!!! ERROR DE SEGURIDAD: Home no encontrado despues de "
-                     "6000 pasos. Driver apagado o motor atascado. !!!");
-      motor_stop();
-      return false;
-    }
+  next_home_step_micros = micros() + 10;
+  if (status != STATUS_PREPARING) {
+    wait_motor_done();
+    return !motor_move_error && !is_limit_pressed();
   }
-
-  digitalWrite(MOTOR_STEP, LOW);
-  motor_pos = 0;
-  delay(500);
-
-  limit_triggered = false;
-  motor_stop(); // Deshabilitar bobinas tras hacer home
-  Serial.println("Home completado con éxito.");
   return true;
 }
 
 bool mover_a(int target) {
-  if (SIMULAR_MOTOR) {
-    Serial.print("[SIMULACION MOTOR] Carro 'viajando' a posicion ");
-    Serial.println(target);
-    return true;
-  }
   int diff = target - motor_pos;
   Serial.print("mover_a: de ");
   Serial.print(motor_pos);
@@ -493,7 +658,12 @@ bool mover_a(int target) {
   Serial.print(" (diff = ");
   Serial.print(diff);
   Serial.println(")");
-  return motor_steps(diff);
+  bool res = motor_steps(diff);
+  if (status != STATUS_PREPARING) {
+    wait_motor_done();
+    return res && !motor_move_error;
+  }
+  return res;
 }
 
 // ═══════════════════════════════════════════
@@ -502,6 +672,15 @@ bool mover_a(int target) {
 void updateMachineState() {
   if (status != STATUS_PREPARING)
     return;
+
+  if (is_motor_moving || is_homing) {
+    return;
+  }
+  if (motor_move_error) {
+    motor_move_error = false;
+    handleMovementError("Fallo en movimiento del motor");
+    return;
+  }
 
   unsigned long now = millis();
 
@@ -517,8 +696,7 @@ void updateMachineState() {
         handleMovementError("Fallo motor al mover a posicion de vaso");
         return;
       }
-      // Si simula motor, sumamos delay de viaje. Si no, va directo.
-      step_timer = now + (SIMULAR_MOTOR ? 1500 : 0) + 1000;
+      step_timer = now + 1000;
       break;
 
     case STEP_ICE_DISPENSER:
@@ -529,7 +707,7 @@ void updateMachineState() {
       ice_cycle_count = 0;
       ice_cycle_state = 0;
       // Establece timer de ejecucion del dispensado de hielo
-      step_timer = now + (SIMULAR_MOTOR ? 1500 : 0);
+      step_timer = now;
       break;
 
     case STEP_ALCOHOL_DISPENSER: {
@@ -538,95 +716,66 @@ void updateMachineState() {
       currentDispenseItemIdx = 0;
       dispenseSubState = 0;
 
-      float ml_pisco = 90.0; // Default 3 oz
-      float ml_cola =
-          175.0; // Default 7.5 oz (Reducido de 225.0 a 175.0, 50ml menos!)
+      float ml_pisco = 90.0;
+      float ml_cola = 150.0;
 
       if (customAlcoholOz > 0)
         ml_pisco = customAlcoholOz * 30.0;
       if (customMixerOz > 0)
         ml_cola = customMixerOz * 30.0;
 
-      // Poblamos los ingredientes requeridos según la receta
       if (currentRecipeId == "piscola") {
-        // Pisco: Bomba 1 (idx 0), Posición POS_PUMP_1_2, vol: ml_pisco
         itemsToDispense[totalDispenseItems++] = {
             0, POS_PUMP_1_2, (unsigned long)((ml_pisco / b_ml_ps[0]) * 1000)};
-        // Coca-Cola: Bomba 4 (idx 3), Posición POS_PUMP_3_4 (swapped, strong
-        // pump!)
         itemsToDispense[totalDispenseItems++] = {
             3, POS_PUMP_3_4, (unsigned long)((ml_cola / b_ml_ps[3]) * 1000)};
       } else if (currentRecipeId == "negroni") {
-        float ml_gin = (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 60.0;
-        float ml_campari = 60.0; // Restablecido (sin x5)
-        float ml_vermut = (customMixerOz > 0) ? customMixerOz * 30.0 : 60.0;
-        // Gin: Bomba 3 (idx 2), Posición POS_PUMP_3_4
+        float ml_gin = (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 75.0;
+        float ml_campari = 75.0;
+        float ml_vermut = (customMixerOz > 0) ? customMixerOz * 30.0 : 75.0;
         itemsToDispense[totalDispenseItems++] = {
             2, POS_PUMP_3_4, (unsigned long)((ml_gin / b_ml_ps[2]) * 1000)};
-        // Vermut Rosso: Bomba 5 (idx 4), Posición POS_PUMP_5_6
         itemsToDispense[totalDispenseItems++] = {
             4, POS_PUMP_5_6, (unsigned long)((ml_vermut / b_ml_ps[4]) * 1000)};
-        // Campari: Bomba 7 (idx 6), Posición POS_PUMP_7 (swapped)
         itemsToDispense[totalDispenseItems++] = {
             6, POS_PUMP_7, (unsigned long)((ml_campari / b_ml_ps[6]) * 1000)};
       } else if (currentRecipeId == "boulevardier") {
-        float ml_whisky = (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 60.0;
-        float ml_campari = 60.0; // Restablecido (sin x5)
-        float ml_vermut = (customMixerOz > 0) ? customMixerOz * 30.0 : 60.0;
-        // Whisky: Bomba 6 (idx 5), Posición POS_PUMP_5_6
+        float ml_whisky = (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 75.0;
+        float ml_campari = 75.0;
+        float ml_vermut = (customMixerOz > 0) ? customMixerOz * 30.0 : 75.0;
         itemsToDispense[totalDispenseItems++] = {
             5, POS_PUMP_5_6, (unsigned long)((ml_whisky / b_ml_ps[5]) * 1000)};
-        // Vermut Rosso: Bomba 5 (idx 4), Posición POS_PUMP_5_6
         itemsToDispense[totalDispenseItems++] = {
             4, POS_PUMP_5_6, (unsigned long)((ml_vermut / b_ml_ps[4]) * 1000)};
-        // Campari: Bomba 7 (idx 6), Posición POS_PUMP_7 (swapped)
         itemsToDispense[totalDispenseItems++] = {
             6, POS_PUMP_7, (unsigned long)((ml_campari / b_ml_ps[6]) * 1000)};
       } else if (currentRecipeId == "godfather") {
         float ml_whisky =
-            (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 120.0;
-        float ml_amaretto = (customMixerOz > 0) ? customMixerOz * 30.0 : 60.0;
-        // Whisky: Bomba 6 (idx 5), Posición POS_PUMP_5_6
+            (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 150.0;
+        float ml_amaretto = (customMixerOz > 0) ? customMixerOz * 30.0 : 75.0;
         itemsToDispense[totalDispenseItems++] = {
             5, POS_PUMP_5_6, (unsigned long)((ml_whisky / b_ml_ps[5]) * 1000)};
-        // Amaretto: Bomba 2 (idx 1), Posición POS_PUMP_1_2
         itemsToDispense[totalDispenseItems++] = {
             1, POS_PUMP_1_2,
             (unsigned long)((ml_amaretto / b_ml_ps[1]) * 1000)};
       } else if (currentRecipeId == "americano") {
         float ml_campari = (customAlcoholOz > 0) ? customAlcoholOz * 30.0
-                                                 : 90.0; // Restablecido (sin x5)
-        float ml_vermut = (customMixerOz > 0) ? customMixerOz * 30.0 : 90.0;
-        // Vermut Rosso: Bomba 5 (idx 4), Posición POS_PUMP_5_6
+                                                  : 100.0;
+        float ml_vermut = (customMixerOz > 0) ? customMixerOz * 30.0 : 100.0;
         itemsToDispense[totalDispenseItems++] = {
             4, POS_PUMP_5_6, (unsigned long)((ml_vermut / b_ml_ps[4]) * 1000)};
-        // Campari: Bomba 7 (idx 6), Posición POS_PUMP_7 (swapped)
         itemsToDispense[totalDispenseItems++] = {
             6, POS_PUMP_7, (unsigned long)((ml_campari / b_ml_ps[6]) * 1000)};
       } else if (currentRecipeId == "whisky_rocks") {
         float ml_whisky =
-            (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 120.0;
-        // Whisky: Bomba 6 (idx 5), Posición POS_PUMP_5_6
+            (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 180.0;
         itemsToDispense[totalDispenseItems++] = {
             5, POS_PUMP_5_6, (unsigned long)((ml_whisky / b_ml_ps[5]) * 1000)};
       } else if (currentRecipeId == "campari_rocks") {
         float ml_campari = (customAlcoholOz > 0) ? customAlcoholOz * 30.0
-                                                 : 120.0; // Restablecido (sin x5)
-        // Campari: Bomba 7 (idx 6), Posición POS_PUMP_7 (swapped)
+                                                  : 180.0;
         itemsToDispense[totalDispenseItems++] = {
             6, POS_PUMP_7, (unsigned long)((ml_campari / b_ml_ps[6]) * 1000)};
-      } else if (currentRecipeId == "gin_tonic") {
-        float ml_gin = (customAlcoholOz > 0) ? customAlcoholOz * 30.0 : 120.0;
-        float ml_tonic = (customMixerOz > 0)
-                             ? customMixerOz * 30.0
-                             : 260.0; // Reducido de 180.0 a 130.0, 50ml menos!
-        // Gin: Bomba 3 (idx 2), Posición POS_PUMP_3_4
-        itemsToDispense[totalDispenseItems++] = {
-            2, POS_PUMP_3_4, (unsigned long)((ml_gin / b_ml_ps[2]) * 1000)};
-        // Tonic (Coca-Cola / Mixer): Bomba 4 (idx 3), Posición POS_PUMP_3_4
-        // (swapped)
-        itemsToDispense[totalDispenseItems++] = {
-            3, POS_PUMP_3_4, (unsigned long)((ml_tonic / b_ml_ps[3]) * 1000)};
       }
 
       // Si la receta no requiere bombas, saltamos el paso
@@ -644,7 +793,7 @@ void updateMachineState() {
         handleMovementError("Fallo motor al mover a primer alcohol");
         return;
       }
-      step_timer = now + (SIMULAR_MOTOR ? 1500 : 0);
+      step_timer = now;
     } break;
 
     case STEP_AGITATION_SYSTEM:
@@ -653,7 +802,7 @@ void updateMachineState() {
         return;
       }
       stir_state = 0;
-      step_timer = now + (SIMULAR_MOTOR ? 1500 : 0);
+      step_timer = now;
       break;
 
     case STEP_CARBONATED_STATION:
@@ -662,18 +811,11 @@ void updateMachineState() {
       break;
 
     case STEP_READY:
-      if (!SIMULAR_MOTOR) {
-        if (!home()) {
-          handleMovementError("Fallo motor al retornar a home final");
-          return;
-        }
-      } else {
-        if (!mover_a(POS_READY)) {
-          handleMovementError("Fallo motor al mover a posicion listo");
-          return;
-        }
+      if (!home()) {
+        handleMovementError("Fallo motor al retornar a home final");
+        return;
       }
-      step_timer = now + (SIMULAR_MOTOR ? 1500 : 0) + 500;
+      step_timer = now + 500;
       break;
 
     default:
@@ -691,10 +833,10 @@ void updateMachineState() {
     if (now >= step_timer) {
       // Ejecuta el dispensador de vasos (Servo 1: GPIO 22)
       servo_pos(0, 180);
-      delay(1200); // Retardo físico de caída de vaso (pequeño bloqueo tolerado
+      smartDelay(1200); // Retardo físico de caída de vaso (pequeño bloqueo tolerado
                    // en transicion)
       servo_pos(0, 0);
-      delay(500);
+      smartDelay(500);
 
       // Finaliza paso
       step_in_progress = false;
@@ -773,7 +915,7 @@ void updateMachineState() {
               handleMovementError("Fallo motor al mover a siguiente alcohol");
               return;
             }
-            step_timer = now + (SIMULAR_MOTOR ? 1500 : 0);
+            step_timer = now;
             dispenseSubState = 0; // Viajando
           } else {
             // Terminamos todos los ingredientes
@@ -849,9 +991,7 @@ void updateMachineState() {
       step_in_progress = false;
       activeStep = STEP_NONE;
 
-      if (!SIMULAR_MOTOR) {
-        motor_stop(); // Apaga bobinas al terminar
-      }
+      motor_stop(); // Apaga bobinas al terminar
 
       Serial.println("Bebida servida y lista.");
       publishState();
@@ -868,15 +1008,13 @@ void startPreparation(const String &recipeId, int iceCount, float alcOz,
   // Hacer home al iniciar la preparación para calibrar la posición del carro de
   // forma segura
   Serial.println("Preparando trago: Ejecutando Home de calibracion inicial...");
-  if (!SIMULAR_MOTOR) {
-    if (!home()) {
-      Serial.println("ERROR CRITICO: Fallo la calibracion Home inicial al "
-                     "iniciar preparacion.");
-      status = STATUS_ERROR;
-      errorMessage = "Fallo en calibracion Home";
-      publishState();
-      return;
-    }
+  if (!home()) {
+    Serial.println("ERROR CRITICO: Fallo la calibracion Home inicial al "
+                   "iniciar preparacion.");
+    status = STATUS_ERROR;
+    errorMessage = "Fallo en calibracion Home";
+    publishState();
+    return;
   }
 
   currentRecipeId = recipeId;
@@ -977,32 +1115,58 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   String val = doc["val"] | "";
   String requestId = doc["requestId"] | "";
 
+  in_mqtt_callback = true;
+  int dupIdx = getCachedRequestIdx(requestId);
+  if (dupIdx >= 0) {
+    Serial.println("Comando duplicado ignorado: " + requestId);
+    JsonDocument ackDoc;
+    ackDoc["requestId"] = requestId;
+    ackDoc["ok"] = lastRequests[dupIdx].ok;
+    JsonObject stateObj = ackDoc["state"].to<JsonObject>();
+    stateObj["isOn"] = isOn;
+    stateObj["status"] = statusToString();
+    String err = lastRequests[dupIdx].errorMessage;
+    stateObj["errorMessage"] = err.length() ? err.c_str() : nullptr;
+    stateObj["currentRecipeId"] = currentRecipeId.length() ? currentRecipeId.c_str() : nullptr;
+    stateObj["requestedIceCount"] = requestedIceCount;
+    String ackString;
+    serializeJson(ackDoc, ackString);
+    client.publish(TOPIC_ACK, ackString.c_str());
+    in_mqtt_callback = false;
+    return;
+  }
+
   bool ok = false;
 
   if (cmd == "POWER") {
     isOn = (val == "ON");
-    if (!isOn) {
+    if (!isOn || status == STATUS_ERROR) {
       resetPreparationState();
     }
     ok = true;
   } else if (!isOn) {
-    Serial.println("Comando rechazado: Maquina apagada");
+    errorMessage = "Comando rechazado: Maquina apagada";
+    Serial.println(errorMessage);
   } else if (cmd == "PREPARE") {
     if (status != STATUS_IDLE) {
-      Serial.println("Maquina ocupada");
+      errorMessage = "Maquina ocupada: No se puede iniciar preparacion";
+      Serial.println(errorMessage);
     } else {
       pendingRecipeId = val;
       pendingIceCount = doc["iceCount"] | 2;
       pendingAlcoholOz = doc["alcoholOz"] | 0.0;
       pendingMixerOz = doc["mixerOz"] | 0.0;
       pendingPrepare = true;
+      status = STATUS_PREPARING;
       ok = true;
     }
   } else if (cmd == "CLEAN") {
     if (status != STATUS_IDLE) {
-      Serial.println("Maquina ocupada");
+      errorMessage = "Maquina ocupada: No se puede iniciar limpieza";
+      Serial.println(errorMessage);
     } else {
-      startCleaning();
+      pendingClean = true;
+      status = STATUS_CLEANING;
       ok = true;
     }
   } else if (cmd == "TAKEN") {
@@ -1016,142 +1180,71 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     Serial.println("Nueva config de red recibida. Guardando...");
     ok = true;
   } else if (cmd == "SET_CALIB") {
-    Serial.println("Recibido comando de calibracion SET_CALIB...");
-    preferences.begin("kraken", false);
+    if (status != STATUS_IDLE) {
+      errorMessage = "Maquina ocupada: No se puede calibrar durante una preparacion";
+      Serial.println(errorMessage);
+    } else {
+      Serial.println("Recibido comando de calibracion SET_CALIB...");
+      preferences.begin("kraken", false);
 
-    if (doc.containsKey("rates")) {
-      JsonArray rates = doc["rates"];
-      for (int i = 0; i < 7; i++) {
-        if (!rates[i].isNull()) {
-          b_ml_ps[i] = rates[i].as<float>();
-          String key = "b_ml_" + String(i);
-          preferences.putFloat(key.c_str(), b_ml_ps[i]);
-          Serial.print("Bomba ");
-          Serial.print(i + 1);
-          Serial.print(" caudal: ");
-          Serial.println(b_ml_ps[i]);
+      if (doc.containsKey("rates")) {
+        JsonArray rates = doc["rates"];
+        for (int i = 0; i < 7; i++) {
+          if (!rates[i].isNull()) {
+            b_ml_ps[i] = rates[i].as<float>();
+            if (b_ml_ps[i] < 0.5) b_ml_ps[i] = 15.0;
+            String key = "b_ml_" + String(i);
+            preferences.putFloat(key.c_str(), b_ml_ps[i]);
+            Serial.print("Bomba ");
+            Serial.print(i + 1);
+            Serial.print(" caudal: ");
+            Serial.println(b_ml_ps[i]);
+          }
         }
       }
-    }
 
-    if (doc.containsKey("positions")) {
-      JsonArray positions = doc["positions"];
-      if (positions.size() >= 8) {
-        POS_CUP = positions[0].as<int>();
-        POS_ICE = positions[1].as<int>();
-        POS_STIR = positions[2].as<int>();
-        POS_READY = positions[3].as<int>();
-        POS_PUMP_1_2 = positions[4].as<int>();
-        POS_PUMP_3_4 = positions[5].as<int>();
-        POS_PUMP_5_6 = positions[6].as<int>();
-        POS_PUMP_7 = positions[7].as<int>();
+      if (doc.containsKey("positions")) {
+        JsonArray positions = doc["positions"];
+        if (positions.size() >= 8) {
+          POS_CUP = positions[0].as<int>();
+          POS_ICE = positions[1].as<int>();
+          POS_STIR = positions[2].as<int>();
+          POS_READY = positions[3].as<int>();
+          POS_PUMP_1_2 = positions[4].as<int>();
+          POS_PUMP_3_4 = positions[5].as<int>();
+          POS_PUMP_5_6 = positions[6].as<int>();
+          POS_PUMP_7 = positions[7].as<int>();
 
-        preferences.putInt("pos_cup", POS_CUP);
-        preferences.putInt("pos_ice", POS_ICE);
-        preferences.putInt("pos_stir", POS_STIR);
-        preferences.putInt("pos_ready", POS_READY);
-        preferences.putInt("pos_p12", POS_PUMP_1_2);
-        preferences.putInt("pos_p34", POS_PUMP_3_4);
-        preferences.putInt("pos_p56", POS_PUMP_5_6);
-        preferences.putInt("pos_p7", POS_PUMP_7);
-        Serial.println("Coordenadas de riel actualizadas en Flash.");
+          preferences.putInt("pos_cup", POS_CUP);
+          preferences.putInt("pos_ice", POS_ICE);
+          preferences.putInt("pos_stir", POS_STIR);
+          preferences.putInt("pos_ready", POS_READY);
+          preferences.putInt("pos_p12", POS_PUMP_1_2);
+          preferences.putInt("pos_p34", POS_PUMP_3_4);
+          preferences.putInt("pos_p56", POS_PUMP_5_6);
+          preferences.putInt("pos_p7", POS_PUMP_7);
+          Serial.println("Coordenadas de riel actualizadas en Flash.");
+        }
       }
+      preferences.end();
+      ok = true;
     }
-    preferences.end();
-    ok = true;
   } else if (cmd == "TEST_HW") {
-    String type = doc["type"] | "";
-    int val = doc["val"] | 0;
-
-    if (type == "pump") {
+    if (status != STATUS_IDLE) {
+      errorMessage = "Maquina ocupada: No se puede testear hardware en preparacion";
+      Serial.println(errorMessage);
+    } else {
+      String type = doc["type"] | "";
+      int val = doc["val"] | 0;
       int pin = doc["pin"] | 1;
-      int idx = pin - 1;
       int duration = doc["duration"] | 3000;
-      if (idx >= 0 && idx < NUM_BOMBAS) {
-        digitalWrite(B_PIN[idx], HIGH);
-        pump_stop_time[idx] = millis() + duration;
-        Serial.print("Test Bomba ");
-        Serial.print(pin);
-        Serial.print(" por ");
-        Serial.print(duration);
-        Serial.println("ms");
-      }
-    } else if (type == "servo") {
-      int pin = doc["pin"] | 1;
-      int idx = pin - 1;
-      if (idx >= 0 && idx < 3) {
-        servo_pos(idx, val);
-        Serial.print("Test Servo ");
-        Serial.print(pin);
-        Serial.print(" a ");
-        Serial.println(val);
-      }
-    } else if (type == "servo_cont") {
-      servo_cont_set(val);
-      int duration = doc["duration"] | 0;
-      if (duration > 0) {
-        srv_cont_stop_time = millis() + duration;
-      } else {
-        srv_cont_stop_time = 0;
-      }
-      Serial.print("Test Servo Continuo velocidad=");
-      Serial.print(val);
-      Serial.print(" por ");
-      Serial.print(duration);
-      Serial.println("ms");
-    } else if (type == "motor") {
-      if (!SIMULAR_MOTOR) {
-        motor_steps(val);
-      } else {
-        Serial.print("[SIMULACION] Moviendo motor steps: ");
-        Serial.println(val);
-      }
-    } else if (type == "motor_home") {
-      if (!SIMULAR_MOTOR) {
-        home();
-      } else {
-        Serial.println("[SIMULACION] Ejecutando Home...");
-      }
-    } else if (type == "full_test") {
-      test_maquina_completa();
-    } else if (type == "dry_test") {
-      test_maquina_seco();
-    } else if (type == "motor_abs") {
-      Serial.print("MQTT: Recibido comando motor_abs con valor: ");
-      Serial.println(val);
-      mover_a(val);
-    } else if (type == "vaso_test") {
-      Serial.println("MQTT: Ejecutando ciclo de prueba del vaso");
-      servo_pos(0, 0);
-      delay(500);
-      servo_pos(0, 180);
-      delay(1200);
-      servo_pos(0, 0);
-      delay(500);
-    } else if (type == "hielo_test") {
-      Serial.println("MQTT: Ejecutando ciclo de prueba del hielo");
-      servo_pos(1, 180);
-      delay(500);
-      servo_pos(1, 0);
-      delay(1000);
-      servo_pos(1, 180);
-      delay(500);
-    } else if (type == "cuchara_test") {
-      Serial.println("MQTT: Ejecutando ciclo de prueba de la cuchara");
-      servo_cont_set(100); // Bajar
-      delay(1800);
-      Serial.println("Agitando rapidamente...");
-      for (int k = 0; k < 6; k++) {
-        servo_cont_set(-100); // Subir harto
-        delay(600);           // Aumentado a 600ms para mayor recorrido
-        servo_cont_set(100);  // Bajar harto
-        delay(600);           // Aumentado a 600ms para mayor recorrido
-      }
-      servo_cont_set(-100); // Subir
-      delay(1800);
-      servo_cont_set(0); // Detener
+      pendingTestType = type;
+      pendingTestVal = val;
+      pendingTestPin = pin;
+      pendingTestDuration = duration;
+      pendingTest = true;
+      ok = true;
     }
-    ok = true;
   }
 
   // Publicar ACK confirmando recepción
@@ -1175,6 +1268,9 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   String ackBody;
   serializeJson(ackDoc, ackBody);
   client.publish(TOPIC_ACK, ackBody.c_str());
+
+  cacheRequestResult(requestId, ok, errorMessage);
+  in_mqtt_callback = false;
 
   publishState();
 }
@@ -1286,13 +1382,9 @@ bool recipeNeedsCarbonation(const String &recipeId) {
 
 void test_maquina_completa() {
   Serial.println("Iniciando prueba completa de la maquina...");
-  if (!SIMULAR_MOTOR) {
-    if (!home()) {
-      Serial.println("Falla de Home. Abortando prueba completa.");
-      return;
-    }
-  } else {
-    Serial.println("[SIMULACION] Ejecutando Home...");
+  if (!home()) {
+    Serial.println("Falla de Home. Abortando prueba completa.");
+    return;
   }
 
   // 1. Vaso (0 -> 180 -> 0)
@@ -1302,11 +1394,11 @@ void test_maquina_completa() {
     return;
   }
   servo_pos(0, 0);
-  delay(500);
+  smartDelay(500);
   servo_pos(0, 180);
-  delay(1200);
+  smartDelay(1200);
   servo_pos(0, 0);
-  delay(1000);
+  smartDelay(1000);
 
   // 2. Hielo (Compuerta en 180 -> 0 -> 180)
   Serial.println("Paso 2: Posicion 2600 - hielo");
@@ -1316,12 +1408,12 @@ void test_maquina_completa() {
   }
   servo_pos(1, 180);
   servo_pos(2, 180);
-  delay(500);
+  smartDelay(500);
   // Compuerta 1
   servo_pos(1, 0);
-  delay(1000);
+  smartDelay(1000);
   servo_pos(1, 180);
-  delay(1000);
+  smartDelay(1000);
 
   // 3. Bombas (Activadas una por una en secuencia)
   Serial.println("Paso 3: Posicion 1860 - bombas 1 y 2");
@@ -1331,14 +1423,14 @@ void test_maquina_completa() {
   }
   Serial.println("Encendiendo Bomba 1...");
   digitalWrite(B_PIN[0], HIGH);
-  delay(2000);
+  smartDelay(2000);
   digitalWrite(B_PIN[0], LOW);
-  delay(1500); // Esperar fin de goteo
+  smartDelay(1500); // Esperar fin de goteo
   Serial.println("Encendiendo Bomba 2...");
   digitalWrite(B_PIN[1], HIGH);
-  delay(2000);
+  smartDelay(2000);
   digitalWrite(B_PIN[1], LOW);
-  delay(1500); // Esperar fin de goteo
+  smartDelay(1500); // Esperar fin de goteo
 
   Serial.println("Paso 4: Posicion 1600 - bombas 3 y 4");
   if (!mover_a(1600)) {
@@ -1347,14 +1439,14 @@ void test_maquina_completa() {
   }
   Serial.println("Encendiendo Bomba 3...");
   digitalWrite(B_PIN[2], HIGH);
-  delay(2000);
+  smartDelay(2000);
   digitalWrite(B_PIN[2], LOW);
-  delay(1500);
+  smartDelay(1500);
   Serial.println("Encendiendo Bomba 4...");
   digitalWrite(B_PIN[3], HIGH);
-  delay(2000);
+  smartDelay(2000);
   digitalWrite(B_PIN[3], LOW);
-  delay(1500);
+  smartDelay(1500);
 
   Serial.println("Paso 5: Posicion 1350 - bombas 5 y 6");
   if (!mover_a(1350)) {
@@ -1363,14 +1455,14 @@ void test_maquina_completa() {
   }
   Serial.println("Encendiendo Bomba 5...");
   digitalWrite(B_PIN[4], HIGH);
-  delay(2000);
+  smartDelay(2000);
   digitalWrite(B_PIN[4], LOW);
-  delay(1500);
+  smartDelay(1500);
   Serial.println("Encendiendo Bomba 6...");
   digitalWrite(B_PIN[5], HIGH);
-  delay(2000);
+  smartDelay(2000);
   digitalWrite(B_PIN[5], LOW);
-  delay(1500);
+  smartDelay(1500);
 
   Serial.println("Paso 6: Posicion 1200 - bomba 7");
   if (!mover_a(1200)) {
@@ -1379,9 +1471,9 @@ void test_maquina_completa() {
   }
   Serial.println("Encendiendo Bomba 7...");
   digitalWrite(B_PIN[6], HIGH);
-  delay(2000);
+  smartDelay(2000);
   digitalWrite(B_PIN[6], LOW);
-  delay(1500); // Esperar fin de goteo before moving
+  smartDelay(1500); // Esperar fin de goteo before moving
 
   // 4. Cuchara (Agitación - Penúltimo Paso)
   Serial.println("Paso 7: Posicion 800 - cuchara (agitador)");
@@ -1390,29 +1482,25 @@ void test_maquina_completa() {
     return;
   }
   servo_cont_set(100); // Bajar completo
-  delay(1800);         // Reducido de 3000 a 1800
+  smartDelay(1800);         // Reducido de 3000 a 1800
 
   Serial.println("Agitando rapidamente arriba y abajo...");
   for (int k = 0; k < 6; k++) {
     servo_cont_set(-100); // Subir harto
-    delay(600);           // Aumentado a 600ms para mayor recorrido
+    smartDelay(600);           // Aumentado a 600ms para mayor recorrido
     servo_cont_set(100);  // Bajar harto
-    delay(600);           // Aumentado a 600ms para mayor recorrido
+    smartDelay(600);           // Aumentado a 600ms para mayor recorrido
   }
 
   servo_cont_set(-100); // Subir completo
-  delay(1800);          // Reducido de 3000 a 1800
+  smartDelay(1800);          // Reducido de 3000 a 1800
   servo_cont_set(0);    // Detener
 
   // 5. Home final
   Serial.println("Paso 8: Home final");
-  if (!SIMULAR_MOTOR) {
-    if (!home()) {
-      Serial.println("Falla de Home final. Abortando.");
-      return;
-    }
-  } else {
-    Serial.println("[SIMULACION] Ejecutando Home...");
+  if (!home()) {
+    Serial.println("Falla de Home final. Abortando.");
+    return;
   }
 
   Serial.println("Prueba completa terminada.");
@@ -1420,13 +1508,9 @@ void test_maquina_completa() {
 
 void test_maquina_seco() {
   Serial.println("Iniciando prueba en seco de la maquina...");
-  if (!SIMULAR_MOTOR) {
-    if (!home()) {
-      Serial.println("Falla de Home. Abortando prueba en seco.");
-      return;
-    }
-  } else {
-    Serial.println("[SIMULACION] Ejecutando Home...");
+  if (!home()) {
+    Serial.println("Falla de Home. Abortando prueba en seco.");
+    return;
   }
 
   // 1. Vaso (0 -> 180 -> 0)
@@ -1436,11 +1520,11 @@ void test_maquina_seco() {
     return;
   }
   servo_pos(0, 0);
-  delay(500);
+  smartDelay(500);
   servo_pos(0, 180);
-  delay(1200);
+  smartDelay(1200);
   servo_pos(0, 0);
-  delay(1000);
+  smartDelay(1000);
 
   // 2. Hielo (Compuerta en 180 -> 0 -> 180)
   Serial.println("Paso 2: Posicion 2600 - hielo");
@@ -1450,12 +1534,12 @@ void test_maquina_seco() {
   }
   servo_pos(1, 180);
   servo_pos(2, 180);
-  delay(500);
+  smartDelay(500);
   // Compuerta 1
   servo_pos(1, 0);
-  delay(1000);
+  smartDelay(1000);
   servo_pos(1, 180);
-  delay(1000);
+  smartDelay(1000);
 
   // 3. Bombas (Recorrido en seco, sin encender pines, secuencial)
   Serial.println("Paso 3: Posicion 1860 - bombas 1 y 2 (Seco)");
@@ -1463,38 +1547,38 @@ void test_maquina_seco() {
     Serial.println("Falla al mover a bombas 1 y 2 (Seco). Abortando.");
     return;
   }
-  delay(2000);
-  delay(1500);
-  delay(2000);
-  delay(1500);
+  smartDelay(2000);
+  smartDelay(1500);
+  smartDelay(2000);
+  smartDelay(1500);
 
   Serial.println("Paso 4: Posicion 1600 - bombas 3 y 4 (Seco)");
   if (!mover_a(1600)) {
     Serial.println("Falla al mover a bombas 3 y 4 (Seco). Abortando.");
     return;
   }
-  delay(2000);
-  delay(1500);
-  delay(2000);
-  delay(1500);
+  smartDelay(2000);
+  smartDelay(1500);
+  smartDelay(2000);
+  smartDelay(1500);
 
   Serial.println("Paso 5: Posicion 1350 - bombas 5 y 6 (Seco)");
   if (!mover_a(1350)) {
     Serial.println("Falla al mover a bombas 5 y 6 (Seco). Abortando.");
     return;
   }
-  delay(2000);
-  delay(1500);
-  delay(2000);
-  delay(1500);
+  smartDelay(2000);
+  smartDelay(1500);
+  smartDelay(2000);
+  smartDelay(1500);
 
   Serial.println("Paso 6: Posicion 1200 - bomba 7 (Seco)");
   if (!mover_a(1200)) {
     Serial.println("Falla al mover a bomba 7 (Seco). Abortando.");
     return;
   }
-  delay(2000);
-  delay(1500);
+  smartDelay(2000);
+  smartDelay(1500);
 
   // 4. Cuchara (Agitación - Penúltimo Paso)
   Serial.println("Paso 7: Posicion 800 - cuchara (agitador)");
@@ -1503,30 +1587,105 @@ void test_maquina_seco() {
     return;
   }
   servo_cont_set(100); // Bajar completo
-  delay(1800);         // Reducido de 3000 a 1800
+  smartDelay(1800);         // Reducido de 3000 a 1800
 
   Serial.println("Agitando rapidamente arriba y abajo...");
   for (int k = 0; k < 6; k++) {
     servo_cont_set(-100); // Subir harto (velocidad 100)
-    delay(600);           // Aumentado a 600ms para mayor recorrido
+    smartDelay(600);           // Aumentado a 600ms para mayor recorrido
     servo_cont_set(100);  // Bajar harto (velocidad 100)
-    delay(600);           // Aumentado a 600ms para mayor recorrido
+    smartDelay(600);           // Aumentado a 600ms para mayor recorrido
   }
 
   servo_cont_set(-100); // Subir completo
-  delay(1800);          // Reducido de 3000 a 1800
+  smartDelay(1800);          // Reducido de 3000 a 1800
   servo_cont_set(0);    // Detener
 
   // 5. Home final
   Serial.println("Paso 8: Home final");
-  if (!SIMULAR_MOTOR) {
-    if (!home()) {
-      Serial.println("Falla de Home final (Seco). Abortando.");
-      return;
-    }
-  } else {
-    Serial.println("[SIMULACION] Ejecutando Home...");
+  if (!home()) {
+    Serial.println("Falla de Home final (Seco). Abortando.");
+    return;
   }
 
   Serial.println("Prueba en seco terminada.");
+}
+
+void executeTestHardware(const String &type, int val, int pin, int duration) {
+  if (!isOn) return;
+  if (type == "pump") {
+    int idx = pin - 1;
+    if (idx >= 0 && idx < NUM_BOMBAS) {
+      digitalWrite(B_PIN[idx], HIGH);
+      pump_stop_time[idx] = millis() + duration;
+      Serial.print("Test Bomba ");
+      Serial.print(pin);
+      Serial.print(" por ");
+      Serial.print(duration);
+      Serial.println("ms");
+    }
+  } else if (type == "servo") {
+    int idx = pin - 1;
+    if (idx >= 0 && idx < 3) {
+      servo_pos(idx, val);
+      Serial.print("Test Servo ");
+      Serial.print(pin);
+      Serial.print(" a ");
+      Serial.println(val);
+    }
+  } else if (type == "servo_cont") {
+    servo_cont_set(val);
+    if (duration > 0) {
+      srv_cont_stop_time = millis() + duration;
+    } else {
+      srv_cont_stop_time = 0;
+    }
+    Serial.print("Test Servo Continuo velocidad=");
+    Serial.print(val);
+    Serial.print(" por ");
+    Serial.print(duration);
+    Serial.println("ms");
+  } else if (type == "motor") {
+    motor_steps(val);
+  } else if (type == "motor_home") {
+    home();
+  } else if (type == "full_test") {
+    test_maquina_completa();
+  } else if (type == "dry_test") {
+    test_maquina_seco();
+  } else if (type == "motor_abs") {
+    Serial.print("MQTT: Recibido comando motor_abs con valor: ");
+    Serial.println(val);
+    mover_a(val);
+  } else if (type == "vaso_test") {
+    Serial.println("MQTT: Ejecutando ciclo de prueba del vaso");
+    servo_pos(0, 0);
+    smartDelay(500);
+    servo_pos(0, 180);
+    smartDelay(1200);
+    servo_pos(0, 0);
+    smartDelay(500);
+  } else if (type == "hielo_test") {
+    Serial.println("MQTT: Ejecutando ciclo de prueba del hielo");
+    servo_pos(1, 180);
+    smartDelay(500);
+    servo_pos(1, 0);
+    smartDelay(1000);
+    servo_pos(1, 180);
+    smartDelay(500);
+  } else if (type == "cuchara_test") {
+    Serial.println("MQTT: Ejecutando ciclo de prueba de la cuchara");
+    servo_cont_set(100);
+    smartDelay(1800);
+    Serial.println("Agitando rapidamente...");
+    for (int k = 0; k < 6; k++) {
+      servo_cont_set(-100);
+      smartDelay(600);
+      servo_cont_set(100);
+      smartDelay(600);
+    }
+    servo_cont_set(-100);
+    smartDelay(1800);
+    servo_cont_set(0);
+  }
 }

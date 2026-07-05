@@ -1,6 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -8,6 +9,7 @@ import {
   View,
   Pressable,
 } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { CameraView, useCameraPermissions, BarcodeScanningResult } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -32,23 +34,23 @@ export function EntryScannerScreen({ onResolved }: EntryScannerScreenProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scannerPaused, setScannerPaused] = useState(false);
   const [scanError, setScanError] = useState('');
-  const [showSim, setShowSim] = useState(false);
+  const [showSim, setShowSim] = useState(__DEV__ || process.env.EXPO_PUBLIC_SHOW_SIM === 'true');
+
+  useFocusEffect(
+    useCallback(() => {
+      setScannerPaused(false);
+    }, [])
+  );
 
   const handleResetDb = async () => {
     try {
-      // 1. Reiniciar SQLite (órdenes, configuraciones e inventario base)
       await resetDatabase();
-
-      // 2. Limpiar AsyncStorage para mesas y nombres
       await AsyncStorage.removeItem('penpito.table.sessions');
       await AsyncStorage.removeItem('penpito.device.guestName');
-
-      // 3. Recargar los almacenes Zustand a sus valores iniciales
       await useSessionStore.getState().loadSessions();
       await useInventoryStore.getState().loadInventory();
       await useOrderStore.getState().loadOrders();
 
-      // 4. Publicar limpieza de mesas e inventario completo por MQTT a todos los celulares del local
       const remoteInventory = await inventoryRepository.getAllBottles();
       deviceService.publish('penpito/inventory/state', JSON.stringify(remoteInventory));
       
@@ -63,6 +65,17 @@ export function EntryScannerScreen({ onResolved }: EntryScannerScreenProps) {
       setScanError(`Error al reiniciar: ${errMsg}`);
       console.error(e);
     }
+  };
+
+  const confirmResetDb = () => {
+    Alert.alert(
+      '¿Reiniciar Base de Datos?',
+      'Esta acción borrará todas las órdenes, consumos y sesiones activas. ¿Deseas continuar?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Reiniciar Todo', style: 'destructive', onPress: handleResetDb },
+      ]
+    );
   };
 
   const resolveRawValue = (value: string) => {
@@ -81,15 +94,18 @@ export function EntryScannerScreen({ onResolved }: EntryScannerScreenProps) {
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.headerRow}>
         <Pressable
-          style={styles.bypassTrigger}
+          style={[styles.bypassTrigger, { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.05)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 }]}
           onPress={() => setShowSim(prev => !prev)}
         >
           <FontAwesome
             name="cog"
-            size={18}
+            size={16}
             color={showSim ? Colors.primary : Colors.textMuted}
-            style={{ opacity: 0.3 }}
+            style={{ marginRight: 6 }}
           />
+          <Text style={{ fontSize: 13, color: showSim ? Colors.primary : Colors.textMuted, fontWeight: '600' }}>
+            {showSim ? 'Ocultar Ajustes' : 'Modo Demo / Ajustes'}
+          </Text>
         </Pressable>
       </View>
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -181,7 +197,7 @@ export function EntryScannerScreen({ onResolved }: EntryScannerScreenProps) {
                 title="Reiniciar Base de Datos (Limpiar Todo)"
                 variant="danger"
                 size="sm"
-                onPress={handleResetDb}
+                onPress={confirmResetDb}
                 style={{ marginTop: 16, width: '100%' }}
               />
             </View>

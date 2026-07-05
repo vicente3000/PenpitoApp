@@ -22,6 +22,7 @@ import { useMqttSync } from '../hooks/useMqttSync';
 import {
   buildCartItemLabel,
   formatCurrency,
+  getOrderDisplayName,
   getRecipeDefaultOptions,
   piscolaProfiles,
 } from '../utils/drinkConfig';
@@ -138,7 +139,9 @@ export function UserPortalScreen({
   }, [cart]);
 
   const tableSubtotal = useMemo(() => {
-    return activeOrders.reduce((total, order) => {
+    return activeOrders
+      .filter((order) => order.status !== 'failed')
+      .reduce((total, order) => {
       const r = recipes.find(rec => rec.id === order.recipe_id);
       return total + (r?.price ?? 0);
     }, 0);
@@ -433,7 +436,7 @@ export function UserPortalScreen({
                   {guestOrders.map((order) => (
                     <View key={order.id} style={styles.orderRow}>
                       <View style={styles.orderRowInfo}>
-                        <Text style={styles.orderTitle}>{order.recipe_name}</Text>
+                        <Text style={styles.orderTitle}>{getOrderDisplayName(order)}</Text>
                         <Text style={styles.orderMeta}>{getOrderStatusLabel(order.status)}</Text>
                       </View>
                       <View style={styles.orderActions}>

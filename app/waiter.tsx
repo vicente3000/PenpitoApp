@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect } from 'react';
 import { StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -7,6 +7,7 @@ import { WaiterScreen } from '../src/screens/WaiterScreen';
 import { useOrderStore } from '../src/stores/OrderStore';
 import { useSessionStore } from '../src/stores/SessionStore';
 import { DrinkOrder } from '../src/models';
+import { deviceService } from '../src/services/DeviceService';
 
 export default function WaiterRoute() {
   const {
@@ -21,6 +22,49 @@ export default function WaiterRoute() {
     removeGuestFromTable,
     clearTableSession,
   } = useSessionStore();
+
+  // Sincronizar todas las mesas (1-10) vía MQTT en la consola del mesero
+  useEffect(() => {
+    const unsubs: (() => void)[] = [];
+
+    for (let tableNum = 1; tableNum <= 10; tableNum++) {
+      const unsubSession = deviceService.subscribeCustom(
+        `penpito/table/${tableNum}/session`,
+        (payload) => {
+          try {
+            const session = JSON.parse(payload);
+            useSessionStore.getState().syncSessionFromNetwork(tableNum, session);
+          } catch {
+            // ignore
+          }
+        }
+      );
+      if (unsubSession) unsubs.push(unsubSession);
+
+      const unsubOrders = deviceService.subscribeCustom(
+        `penpito/table/${tableNum}/orders`,
+        (payload) => {
+          try {
+            const parsedOrders = JSON.parse(payload);
+            void useOrderStore.getState().syncOrdersFromNetwork(tableNum, parsedOrders);
+          } catch {
+            // ignore
+          }
+        }
+      );
+      if (unsubOrders) unsubs.push(unsubOrders);
+
+      // Solicitar sincronización inicial
+      deviceService.publish(
+        `penpito/table/${tableNum}/request`,
+        JSON.stringify({ type: 'SYNC_REQUEST' })
+      );
+    }
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, []);
 
   const queuedOrders = useMemo(() => orders.filter((o) => o.status === 'queued'), [orders]);
   const readyOrders = useMemo(() => orders.filter((o) => o.status === 'ready'), [orders]);

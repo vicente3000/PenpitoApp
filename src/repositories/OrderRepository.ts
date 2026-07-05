@@ -128,7 +128,7 @@ export class OrderRepository {
 
   async deleteOrdersForTable(tableNumber: number): Promise<void> {
     const db = await getDb();
-    await db.runAsync('DELETE FROM orders WHERE table_number = ?', [tableNumber]);
+    await db.runAsync("DELETE FROM orders WHERE table_number = ? AND status != 'served'", [tableNumber]);
   }
 
   async deleteOrder(orderId: string): Promise<void> {

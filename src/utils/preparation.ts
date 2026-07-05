@@ -48,11 +48,11 @@ export const preparationSteps: PreparationStepDefinition[] = [
 ];
 
 export function recipeNeedsAgitation(recipeId: string) {
-  return recipeId === 'negroni';
+  return recipeId === 'negroni' || recipeId === 'boulevardier' || recipeId === 'godfather' || recipeId === 'americano';
 }
 
 export function recipeNeedsCarbonation(recipeId: string) {
-  return recipeId === 'piscola' || recipeId === 'gin_tonic';
+  return recipeId === 'piscola';
 }
 
 export function getSkippedSteps(recipeId: string, iceCount: number) {

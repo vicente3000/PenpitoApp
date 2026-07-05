@@ -47,6 +47,7 @@ export interface DeviceCommand {
   cmd: string;
   val: string;
   target?: 'pumps' | 'motor' | 'kraken';
+  requestId?: string;
   iceCount?: number;
   alcoholOz?: number;
   mixerOz?: number;

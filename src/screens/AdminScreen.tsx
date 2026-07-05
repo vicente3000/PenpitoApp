@@ -28,6 +28,8 @@ import { Card } from '../components/ui/Card';
 import { Dialog, DialogAction } from '../components/ui/Dialog';
 import { PreparationTimeline } from '../components/PreparationTimeline';
 import { deviceService } from '../services/DeviceService';
+import { commandQueueService } from '../services/CommandQueueService';
+import { ConnectionSnapshot } from '../adapters/ICommunicationAdapter';
 
 export type Esp32DeviceKey = 'kraken';
 
@@ -44,6 +46,7 @@ export interface AdminScreenProps {
   iceDispenseTimeS: string;
   inventory: BottleInventory[];
   isConnected: boolean;
+  connectionSnapshot?: ConnectionSnapshot;
   machineState: MachineState;
   settings: MachineSettings | null;
   onBack: () => void;
@@ -77,6 +80,7 @@ export function AdminScreen({
   iceDispenseTimeS,
   inventory,
   isConnected,
+  connectionSnapshot,
   machineState,
   settings,
   onBack,
@@ -183,7 +187,7 @@ export function AdminScreen({
     const targetPos = getPumpPosition(pumpNum);
     setLocalFeedback(`Posicionando carro en ${targetPos} pasos para Bomba ${pumpNum}...`);
     
-    const moveSuccess = await deviceService.sendCommand({
+    const moveSuccess = await commandQueueService.enqueue({
       cmd: 'TEST_HW',
       target: 'kraken',
       type: 'motor_abs',
@@ -198,7 +202,7 @@ export function AdminScreen({
     await sleep(2500);
     setLocalFeedback(`Ejecutando Bomba ${pumpNum} por 10 segundos...`);
     
-    const pumpSuccess = await deviceService.sendCommand({
+    const pumpSuccess = await commandQueueService.enqueue({
       cmd: 'TEST_HW',
       target: 'kraken',
       type: 'pump',
@@ -285,7 +289,7 @@ export function AdminScreen({
       // Automatically position the carriage before activating the pump
       const targetPos = getPumpPosition(pin);
       setLocalFeedback(`Posicionando carro en ${targetPos} pasos para Bomba ${pin}...`);
-      const moveSuccess = await deviceService.sendCommand({
+      const moveSuccess = await commandQueueService.enqueue({
         cmd: 'TEST_HW',
         target: 'kraken',
         type: 'motor_abs',
@@ -339,7 +343,7 @@ export function AdminScreen({
     }
 
     setLocalFeedback(`Enviando comando: ${payload.type}...`);
-    const success = await deviceService.sendCommand({
+    const success = await commandQueueService.enqueue({
       cmd: 'TEST_HW',
       val: payload.type,
       target: 'kraken',
@@ -574,7 +578,7 @@ export function AdminScreen({
           text: 'DETENER KRAKEN',
           variant: 'danger',
           onPress: () => {
-            void deviceService.sendCommand({ cmd: 'POWER', val: 'OFF', target: 'kraken' });
+            void commandQueueService.enqueue({ cmd: 'POWER', val: 'OFF', target: 'kraken' });
             setTimeout(() => {
               showCustomDialog(
                 'Detenido',
@@ -611,28 +615,32 @@ export function AdminScreen({
           <View style={styles.emergencyRow}>
             <FontAwesome name="exclamation-triangle" size={24} color={Colors.error} />
             <View style={[styles.emergencyTextWrap, { marginLeft: 12 }]}>
-              <Text style={[styles.emergencyTitle, { color: Colors.text }]}>MÁQUINA APAGADA</Text>
-              <Text style={[styles.emergencySubtitle, { color: Colors.textMuted }]}>La corriente del dosificador está desactivada.</Text>
+              <Text style={[styles.emergencyTitle, { color: Colors.text }]}>MAQUINA APAGADA</Text>
+              <Text style={[styles.emergencySubtitle, { color: Colors.textMuted }]}>La corriente del dosificador esta desactivada.</Text>
             </View>
-            <Button
-              title="ENCENDER"
-              variant="primary"
-              size="sm"
-              onPress={async () => {
-                const success = await deviceService.sendCommand({ cmd: 'POWER', val: 'ON', target: 'kraken' });
-                if (success) {
-                  showCustomDialog(
-                    'Máquina Encendida',
-                    'Se ha reactivado la corriente y reiniciado la máquina con éxito.',
-                    [{ text: 'Aceptar', variant: 'primary' }]
-                  );
-                }
-              }}
-              style={{ backgroundColor: Colors.success, borderColor: Colors.success, minHeight: 32, paddingHorizontal: 12 } as any}
-            />
+            {connectionSnapshot?.deviceOnline ? (
+              <Button
+                title="ENCENDER"
+                variant="primary"
+                size="sm"
+                onPress={async () => {
+                  const success = await commandQueueService.enqueue({ cmd: 'POWER', val: 'ON', target: 'kraken' });
+                  if (success) {
+                    showCustomDialog(
+                      'Maquina Encendida',
+                      'Se ha reactivado la corriente y reiniciado la maquina con exito.',
+                      [{ text: 'Aceptar', variant: 'primary' }]
+                    );
+                  }
+                }}
+                style={{ backgroundColor: Colors.success, borderColor: Colors.success, minHeight: 32, paddingHorizontal: 12 } as any}
+              />
+            ) : (
+              <Text style={{ fontSize: 12, color: Colors.textMuted, fontWeight: '600' }}>ESP32 fuera de linea</Text>
+            )}
           </View>
         </Card>
-      ) : (
+      ) : connectionSnapshot?.deviceOnline ? (
         <Card style={styles.emergencyCard} glow>
           <View style={styles.emergencyRow}>
             <FontAwesome name="exclamation-triangle" size={24} color="#ffffff" />
@@ -649,6 +657,16 @@ export function AdminScreen({
             />
           </View>
         </Card>
+      ) : (
+        <Card style={[styles.emergencyCard, { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderColor: '#F59E0B' }]} glow={false}>
+          <View style={styles.emergencyRow}>
+            <FontAwesome name="exclamation-triangle" size={24} color="#F59E0B" />
+            <View style={styles.emergencyTextWrap}>
+              <Text style={[styles.emergencyTitle, { color: '#F59E0B' }]}>ESP32 fuera de linea</Text>
+              <Text style={[styles.emergencySubtitle, { color: Colors.textMuted }]}>La maquina no responde en la red. Parada de emergencia no disponible.</Text>
+            </View>
+          </View>
+        </Card>
       )}
 
       <View style={styles.topBar}>
@@ -658,10 +676,28 @@ export function AdminScreen({
         </Pressable>
       </View>
 
+      {connectionSnapshot && connectionSnapshot.broker !== 'connected' ? (
+        <View style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)', borderColor: Colors.error, borderWidth: 1, padding: 12, borderRadius: 12, marginBottom: 16, flexDirection: 'row', alignItems: 'center' }}>
+          <FontAwesome name="wifi" size={18} color={Colors.error} style={{ marginRight: 10 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: Colors.error, fontWeight: 'bold', fontSize: 14 }}>Sin Conexion al Broker MQTT</Text>
+            <Text style={{ color: Colors.textMuted, fontSize: 12, marginTop: 2 }}>Verifica la red local o la direccion IP y puerto del broker.</Text>
+          </View>
+        </View>
+      ) : connectionSnapshot && !connectionSnapshot.deviceOnline ? (
+        <View style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', borderColor: '#F59E0B', borderWidth: 1, padding: 12, borderRadius: 12, marginBottom: 16, flexDirection: 'row', alignItems: 'center' }}>
+          <FontAwesome name="exclamation-triangle" size={18} color="#F59E0B" style={{ marginRight: 10 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#F59E0B', fontWeight: 'bold', fontSize: 14 }}>Broker Conectado - ESP32 Offline</Text>
+            <Text style={{ color: Colors.textMuted, fontSize: 12, marginTop: 2 }}>El broker esta activo pero la maquina ESP32 no reporta presencia en la red.</Text>
+          </View>
+        </View>
+      ) : null}
+
       <Card style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>Estado de la máquina</Text>
-        <Text style={styles.sectionText}>Conexión ESP32: {isConnected ? '⚡ Activa' : '❌ Sin conexión'}</Text>
-        <Text style={styles.sectionText}>Operación actual: {machineState.status.toUpperCase()}</Text>
+        <Text style={styles.sectionTitle}>Estado de la maquina</Text>
+        <Text style={styles.sectionText}>Conexion ESP32: {isConnected ? 'Activa y Online' : connectionSnapshot?.broker === 'connected' ? 'Broker OK, ESP32 Offline' : 'Sin conexion a broker'}</Text>
+        <Text style={styles.sectionText}>Operacion actual: {machineState.status.toUpperCase()}</Text>
       </Card>
 
       <Card style={styles.sectionCard}>
@@ -762,6 +798,40 @@ export function AdminScreen({
       </Card>
 
 
+
+      <Card style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>Configuración General de Operación</Text>
+        {settingsFeedback ? (
+          <View style={{ backgroundColor: 'rgba(34, 197, 94, 0.15)', borderColor: Colors.success, borderWidth: 1, padding: 12, borderRadius: 8, marginBottom: 16 }}>
+            <Text style={{ color: Colors.success, fontWeight: '600', fontSize: 14 }}>{settingsFeedback}</Text>
+          </View>
+        ) : null}
+        <Text style={styles.sectionText}>Ajusta las velocidades generales y funciones automáticas del equipo:</Text>
+        
+        <Text style={styles.inputLabel}>Velocidad por Defecto (ml/s)</Text>
+        <TextInput
+          keyboardType="numeric"
+          style={styles.input}
+          value={dispenseSpeedMlS}
+          onChangeText={setDispenseSpeedMlS}
+        />
+
+        <Text style={styles.inputLabel}>Tiempo de Hielo por Defecto (s)</Text>
+        <TextInput
+          keyboardType="numeric"
+          style={styles.input}
+          value={iceDispenseTimeS}
+          onChangeText={setIceDispenseTimeS}
+        />
+
+        <Button
+          title="Guardar Configuración General"
+          variant="primary"
+          size="md"
+          onPress={() => onSaveSettings()}
+          style={{ marginTop: 8 } as any}
+        />
+      </Card>
 
       <Card style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>Calibración de Caudal de Bombas</Text>

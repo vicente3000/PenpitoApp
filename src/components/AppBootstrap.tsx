@@ -16,6 +16,12 @@ export function AppBootstrap() {
       void useOrderStore.getState().syncFromMachine(state);
     });
 
+    const unsubConnection = deviceService.onConnectionChange((snapshot) => {
+      if (isMounted) {
+        useAppStore.getState().setConnectionSnapshot(snapshot);
+      }
+    });
+
     const initialize = async () => {
       await Promise.allSettled([
         useRecipeStore.getState().loadRecipes(),
@@ -25,17 +31,14 @@ export function AppBootstrap() {
         useSessionStore.getState().loadSessions(),
       ]);
 
-      const connected = await deviceService.connect();
-      if (isMounted) {
-        useAppStore.getState().setIsConnected(connected);
-      }
+      await deviceService.connect();
     };
 
     void initialize();
 
     return () => {
       isMounted = false;
-      useAppStore.getState().setIsConnected(false);
+      unsubConnection();
       void deviceService.disconnect();
     };
   }, []);

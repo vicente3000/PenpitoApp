@@ -1,13 +1,21 @@
-import { ICommunicationAdapter } from './ICommunicationAdapter';
+import { ICommunicationAdapter, ConnectionSnapshot, ConnectionStatus } from './ICommunicationAdapter';
 import { DeviceCommand, MachineState } from '../models';
 
 const DEFAULT_MQTT_WS_URL = 'ws://192.168.1.100:9001';
 const MQTT_KEEPALIVE_SECONDS = 30;
 const COMMAND_ACK_TIMEOUT_MS = 10000;
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+const RECONNECT_MAX_JITTER_MS = 1000;
+
+function jitter(ms: number) {
+  return ms + Math.random() * RECONNECT_MAX_JITTER_MS;
+}
 
 const TOPIC_STATE = 'penpito/kraken/state';
 const TOPIC_COMMAND = 'penpito/kraken/command';
 const TOPIC_ACK = 'penpito/kraken/command/ack';
+const TOPIC_PRESENCE = 'penpito/kraken/presence';
 const DEVICE_IDS = ['pumps', 'motor', 'kraken'] as const;
 
 const initialState: MachineState = {
@@ -28,8 +36,14 @@ type PendingAck = {
 
 type MqttMessageHandler = (topic: string, payload: string) => void;
 
-function getMqttUrl() {
-  return process.env.EXPO_PUBLIC_MQTT_WS_URL ?? DEFAULT_MQTT_WS_URL;
+let customMqttUrl: string | null = null;
+
+export function setCustomMqttUrl(url: string | null) {
+  customMqttUrl = url && url.trim().length > 0 ? url.trim() : null;
+}
+
+export function getMqttUrl() {
+  return customMqttUrl || process.env.EXPO_PUBLIC_MQTT_WS_URL || DEFAULT_MQTT_WS_URL;
 }
 
 function encodeUtf8(value: string) {
@@ -134,6 +148,19 @@ class MinimalMqttWebSocketClient {
     if (this.socket?.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }
+    if (this.socket?.readyState === WebSocket.CONNECTING) {
+      return new Promise((resolve, reject) => {
+        const checkInterval = setInterval(() => {
+          if (this.socket?.readyState === WebSocket.OPEN) {
+            clearInterval(checkInterval);
+            resolve();
+          } else if (!this.socket || this.socket.readyState === WebSocket.CLOSED || this.socket.readyState === WebSocket.CLOSING) {
+            clearInterval(checkInterval);
+            reject(new Error('MQTT WebSocket conexión abortada'));
+          }
+        }, 100);
+      });
+    }
 
     return new Promise((resolve, reject) => {
       this.connectResolve = resolve;
@@ -206,6 +233,10 @@ class MinimalMqttWebSocketClient {
     const bodyStart = 1 + remaining.bytesRead;
     const bodyEnd = bodyStart + remaining.value;
 
+    if (bodyEnd > packet.length) {
+      return;
+    }
+
     if (packetType === 2) {
       const returnCode = packet[bodyStart + 1];
       if (returnCode === 0) {
@@ -237,6 +268,9 @@ class MinimalMqttWebSocketClient {
     let encoded = 0;
 
     do {
+      if (offset + bytesRead >= packet.length) {
+        break;
+      }
       encoded = packet[offset + bytesRead];
       value += (encoded & 127) * multiplier;
       multiplier *= 128;
@@ -301,15 +335,23 @@ class MinimalMqttWebSocketClient {
 export class KrakenMqttAdapter implements ICommunicationAdapter {
   private client: MinimalMqttWebSocketClient | null = null;
   private isConnected = false;
-  private stateChangeCallback: ((state: MachineState) => void) | null = null;
+  private stateListeners = new Set<(state: MachineState) => void>();
   private currentState: MachineState = initialState;
   private pendingAcks = new Map<string, PendingAck>();
   private connectPromise: Promise<boolean> | null = null;
   private customSubscribers = new Map<string, Set<(payload: string) => void>>();
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private deviceOnline = false;
+  private lastDeviceMessageAt: number | null = null;
+  private connectionListeners = new Set<(snapshot: ConnectionSnapshot) => void>();
+  private shouldReconnect = false;
+  private reconnectAttempts = 0;
+  private currentBrokerStatus: ConnectionStatus = 'disconnected';
 
   constructor(private readonly brokerUrl = getMqttUrl()) {}
 
   async connect(): Promise<boolean> {
+    this.shouldReconnect = true;
     if (this.isConnected) {
       return true;
     }
@@ -318,6 +360,7 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
       return this.connectPromise;
     }
 
+    this.fireConnectionChange(this.reconnectTimer ? 'reconnecting' : 'connecting');
     this.connectPromise = this.openConnection();
     const result = await this.connectPromise;
     this.connectPromise = null;
@@ -325,9 +368,16 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
   }
 
   async disconnect(): Promise<void> {
+    this.shouldReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.client?.disconnect();
     this.client = null;
     this.isConnected = false;
+    this.deviceOnline = false;
+    this.fireConnectionChange('disconnected');
     this.pendingAcks.forEach((entry) => {
       clearTimeout(entry.timeout);
       entry.resolve(false);
@@ -342,7 +392,7 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
     }
 
     const client = this.client;
-    const requestId = makeRequestId();
+    const requestId = command.requestId || makeRequestId();
     const payload = JSON.stringify({ ...command, requestId });
     const commandTopic = command.target ? getDeviceTopic(command.target, 'command') : TOPIC_COMMAND;
 
@@ -366,9 +416,53 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
     });
   }
 
-  onStateChange(callback: (state: MachineState) => void): void {
-    this.stateChangeCallback = callback;
-    this.fireStateChange();
+  onStateChange(callback: (state: MachineState) => void): () => void {
+    this.stateListeners.add(callback);
+    callback({ ...this.currentState });
+    return () => {
+      this.stateListeners.delete(callback);
+    };
+  }
+
+  onConnectionChange(callback: (snapshot: ConnectionSnapshot) => void): () => void {
+    this.connectionListeners.add(callback);
+    callback({
+      broker: this.currentBrokerStatus,
+      deviceOnline: this.deviceOnline,
+      lastDeviceMessageAt: this.lastDeviceMessageAt,
+      error: null,
+    });
+    return () => {
+      this.connectionListeners.delete(callback);
+    };
+  }
+
+  private fireConnectionChange(statusOverride?: ConnectionStatus, errorMsg: string | null = null) {
+    if (statusOverride) {
+      this.currentBrokerStatus = statusOverride;
+    } else {
+      this.currentBrokerStatus = this.isConnected ? 'connected' : 'disconnected';
+    }
+    const snapshot: ConnectionSnapshot = {
+      broker: this.currentBrokerStatus,
+      deviceOnline: this.deviceOnline,
+      lastDeviceMessageAt: this.lastDeviceMessageAt,
+      error: errorMsg,
+    };
+    this.connectionListeners.forEach((cb) => cb(snapshot));
+  }
+
+  private scheduleReconnect() {
+    if (!this.shouldReconnect || this.reconnectTimer || this.isConnected) return;
+    const delay = jitter(Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, this.reconnectAttempts)));
+    console.log(`[KrakenMqttAdapter] Reconexión en ${Math.round(delay)}ms (intento #${this.reconnectAttempts})`);
+    this.fireConnectionChange('reconnecting');
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.shouldReconnect) {
+        void this.connect();
+      }
+    }, delay);
   }
 
   publish(topic: string, payload: string) {
@@ -409,12 +503,22 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
         (topic, payload) => this.handleMessage(topic, payload),
         () => {
           this.isConnected = false;
+          this.fireConnectionChange('disconnected');
+          this.pendingAcks.forEach((entry) => {
+            clearTimeout(entry.timeout);
+            entry.resolve(false);
+          });
+          this.pendingAcks.clear();
+          if (this.shouldReconnect) {
+            this.scheduleReconnect();
+          }
         }
       );
 
       await client.connect();
       client.subscribe(TOPIC_STATE);
       client.subscribe(TOPIC_ACK);
+      client.subscribe(TOPIC_PRESENCE);
       DEVICE_IDS.forEach((deviceId) => {
         client.subscribe(getDeviceTopic(deviceId, 'state'));
         client.subscribe(getDeviceTopic(deviceId, 'command/ack'));
@@ -425,21 +529,35 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
       });
       this.client = client;
       this.isConnected = true;
+      this.reconnectAttempts = 0;
+      this.fireConnectionChange('connected');
       return true;
     } catch (error) {
       console.warn('[KrakenMqttAdapter] Could not connect to Mosquitto.', error);
       this.isConnected = false;
+      this.reconnectAttempts += 1;
+      this.fireConnectionChange('error', 'No se pudo conectar con Mosquitto. Revisa el broker MQTT.');
       this.setState({
         ...initialState,
         status: 'error',
         errorMessage: 'No se pudo conectar con Mosquitto. Revisa el broker MQTT.',
       });
+      if (this.shouldReconnect) {
+        this.scheduleReconnect();
+      }
       return false;
     }
   }
 
   private handleMessage(topic: string, payload: string) {
     try {
+      if (topic === TOPIC_PRESENCE) {
+        this.deviceOnline = payload.trim() === 'online';
+        this.lastDeviceMessageAt = Date.now();
+        this.fireConnectionChange();
+        return;
+      }
+
       // 1. Notificar a los suscriptores personalizados
       const subs = this.customSubscribers.get(topic);
       if (subs) {
@@ -453,28 +571,37 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
       }
 
       // 2. Procesar el estado y acks internos de la máquina
-      if (topic === TOPIC_STATE || topic === getDeviceTopic('pumps', 'state')) {
-        this.setState(JSON.parse(payload));
+      if (topic === TOPIC_STATE || DEVICE_IDS.some((deviceId) => topic === getDeviceTopic(deviceId, 'state'))) {
+        this.deviceOnline = true;
+        this.lastDeviceMessageAt = Date.now();
+        this.fireConnectionChange();
+        const parsed = JSON.parse(payload);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          this.setState(parsed as MachineState);
+        }
         return;
       }
 
       if (topic === TOPIC_ACK || DEVICE_IDS.some((deviceId) => topic === getDeviceTopic(deviceId, 'command/ack'))) {
-        const ack = JSON.parse(payload) as {
+        this.deviceOnline = true;
+        this.lastDeviceMessageAt = Date.now();
+        this.fireConnectionChange();
+        const parsed = JSON.parse(payload);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return;
+        }
+        const ack = parsed as {
           requestId?: string;
           ok?: boolean;
           state?: MachineState;
         };
-
-        if (ack.state) {
-          this.setState(ack.state);
-        }
 
         if (ack.requestId) {
           const pending = this.pendingAcks.get(ack.requestId);
           if (pending) {
             clearTimeout(pending.timeout);
             this.pendingAcks.delete(ack.requestId);
-            pending.resolve(ack.ok !== false);
+            pending.resolve(ack.ok === true);
           }
         }
       }
@@ -494,8 +621,6 @@ export class KrakenMqttAdapter implements ICommunicationAdapter {
   }
 
   private fireStateChange() {
-    if (this.stateChangeCallback) {
-      this.stateChangeCallback({ ...this.currentState });
-    }
+    this.stateListeners.forEach((cb) => cb({ ...this.currentState }));
   }
 }

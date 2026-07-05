@@ -21,19 +21,26 @@ export class DeviceService {
     return await this.adapter.sendCommand(command);
   }
 
-  onStateChange(callback: (state: MachineState) => void): void {
-    this.adapter.onStateChange(callback);
+  onStateChange(callback: (state: MachineState) => void): () => void {
+    return this.adapter.onStateChange(callback);
+  }
+
+  onConnectionChange(callback: (snapshot: import('../adapters/ICommunicationAdapter').ConnectionSnapshot) => void): () => void {
+    if (this.adapter.onConnectionChange) {
+      return this.adapter.onConnectionChange(callback);
+    }
+    return () => {};
   }
 
   publish(topic: string, payload: string): void {
-    if ('publish' in this.adapter) {
-      (this.adapter as any).publish(topic, payload);
+    if (this.adapter.publish) {
+      this.adapter.publish(topic, payload);
     }
   }
 
   subscribeCustom(topic: string, callback: (payload: string) => void): (() => void) | undefined {
-    if ('subscribeCustom' in this.adapter) {
-      return (this.adapter as any).subscribeCustom(topic, callback);
+    if (this.adapter.subscribeCustom) {
+      return this.adapter.subscribeCustom(topic, callback);
     }
     return undefined;
   }

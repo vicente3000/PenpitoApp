@@ -32,8 +32,6 @@ function getDrinkCardImage(recipeId: string): ImageSourcePropType | null {
     case 'americano':
     case 'campari_rocks':
       return require('../../../assets/images/drink-negroni-carousel.png');
-    case 'gin_tonic':
-      return require('../../../assets/images/drink-gin-tonic-carousel.png');
     default:
       return null;
   }
@@ -64,10 +62,12 @@ export const DrinkGrid = ({
         accessibilityLabel={`${item.name}, ${formatCurrency(item.price)}`}
       >
         <Card style={styles.cardOverrides}>
-          {image ? (
+          {item.image_url ? (
+            <Image source={{ uri: item.image_url }} style={styles.drinkImage} resizeMode="cover" />
+          ) : image ? (
             <Image source={image} style={styles.drinkImage} resizeMode="cover" />
           ) : (
-            <View style={styles.imagePlaceholder}>
+            <View style={[styles.imagePlaceholder, { backgroundColor: 'rgba(196, 106, 74, 0.08)', borderWidth: 1, borderColor: 'rgba(196, 106, 74, 0.2)' }]}>
               <Text style={styles.placeholderSymbol}>🍸</Text>
             </View>
           )}

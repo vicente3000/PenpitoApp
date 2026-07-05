@@ -81,10 +81,10 @@ const defaultRecipes: RecipeRow[] = [
   {
     id: 'piscola',
     name: 'Piscola',
-    description: 'Pisco con Coca-Cola con perfiles suave, normal y fuerte.',
+    description: 'Pisco con Coca-Cola. Suave (45+165ml), Normal (60+180ml) o Fuerte (90+150ml). 4 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Pisco","amount_ml":180.0},{"ingredient_name":"Coca-Cola","amount_ml":350.0}]',
-    est_time_seconds: 20,
+    items: '[{"ingredient_name":"Pisco","amount_ml":90.0},{"ingredient_name":"Coca-Cola","amount_ml":150.0}]',
+    est_time_seconds: 28,
     abv: 14,
     is_available: 1,
     price: 7000,
@@ -92,10 +92,10 @@ const defaultRecipes: RecipeRow[] = [
   {
     id: 'negroni',
     name: 'Negroni',
-    description: 'Clasico coctel de gin, campari y vermut rosso con 3 hielos.',
+    description: 'Clasico coctel de gin, campari y vermut rosso. 3 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Gin","amount_ml":60.0},{"ingredient_name":"Campari","amount_ml":300.0},{"ingredient_name":"Vermut Rosso","amount_ml":60.0}]',
-    est_time_seconds: 18,
+    items: '[{"ingredient_name":"Gin","amount_ml":75.0},{"ingredient_name":"Campari","amount_ml":75.0},{"ingredient_name":"Vermut Rosso","amount_ml":75.0}]',
+    est_time_seconds: 22,
     abv: 24,
     is_available: 1,
     price: 8000,
@@ -103,10 +103,10 @@ const defaultRecipes: RecipeRow[] = [
   {
     id: 'boulevardier',
     name: 'Boulevardier',
-    description: 'Elegante variacion del Negroni usando Whisky en lugar de Gin.',
+    description: 'Elegante variacion del Negroni usando Whisky. 3 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Whisky","amount_ml":60.0},{"ingredient_name":"Campari","amount_ml":300.0},{"ingredient_name":"Vermut Rosso","amount_ml":60.0}]',
-    est_time_seconds: 18,
+    items: '[{"ingredient_name":"Whisky","amount_ml":75.0},{"ingredient_name":"Campari","amount_ml":75.0},{"ingredient_name":"Vermut Rosso","amount_ml":75.0}]',
+    est_time_seconds: 22,
     abv: 28,
     is_available: 1,
     price: 8500,
@@ -114,10 +114,10 @@ const defaultRecipes: RecipeRow[] = [
   {
     id: 'godfather',
     name: 'Godfather',
-    description: 'Mezcla clasica de Whisky y Amaretto con 3 hielos.',
+    description: 'Mezcla clasica de Whisky y Amaretto. 3 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Whisky","amount_ml":120.0},{"ingredient_name":"Amaretto","amount_ml":60.0}]',
-    est_time_seconds: 15,
+    items: '[{"ingredient_name":"Whisky","amount_ml":150.0},{"ingredient_name":"Amaretto","amount_ml":75.0}]',
+    est_time_seconds: 20,
     abv: 35,
     is_available: 1,
     price: 9000,
@@ -125,10 +125,10 @@ const defaultRecipes: RecipeRow[] = [
   {
     id: 'americano',
     name: 'Americano',
-    description: 'Suave coctel a base de Campari y Vermut Rosso.',
+    description: 'Suave coctel a base de Campari y Vermut Rosso. 3 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Campari","amount_ml":450.0},{"ingredient_name":"Vermut Rosso","amount_ml":90.0}]',
-    est_time_seconds: 15,
+    items: '[{"ingredient_name":"Campari","amount_ml":100.0},{"ingredient_name":"Vermut Rosso","amount_ml":100.0}]',
+    est_time_seconds: 19,
     abv: 12,
     is_available: 1,
     price: 7500,
@@ -136,10 +136,10 @@ const defaultRecipes: RecipeRow[] = [
   {
     id: 'whisky_rocks',
     name: 'Whisky a las Rocas',
-    description: 'Whisky premium servido a las rocas con hielo.',
+    description: 'Whisky premium servido a las rocas. 3 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Whisky","amount_ml":120.0}]',
-    est_time_seconds: 12,
+    items: '[{"ingredient_name":"Whisky","amount_ml":180.0}]',
+    est_time_seconds: 15,
     abv: 40,
     is_available: 1,
     price: 8000,
@@ -147,10 +147,10 @@ const defaultRecipes: RecipeRow[] = [
   {
     id: 'campari_rocks',
     name: 'Campari a las Rocas',
-    description: 'Campari refrescante servido a las rocas con hielo.',
+    description: 'Campari refrescante servido a las rocas. 3 hielos.',
     image_url: null,
-    items: '[{"ingredient_name":"Campari","amount_ml":600.0}]',
-    est_time_seconds: 12,
+    items: '[{"ingredient_name":"Campari","amount_ml":180.0}]',
+    est_time_seconds: 15,
     abv: 25,
     is_available: 1,
     price: 7500,
@@ -423,6 +423,27 @@ class WebDatabase {
       const id = String(params[0]);
       state.orders = state.orders.filter((item) => item.id !== id);
       saveState(state);
+      return;
+    }
+
+    if (sql.includes('UPDATE inventory SET remaining_ml')) {
+      const remainingMl = Number(params[0]);
+      const id = String(params[params.length - 1]);
+      state.inventory = state.inventory.map((item) =>
+        item.id === id ? { ...item, remaining_ml: remainingMl, remaining_oz: Number(ozToMl(remainingMl).toFixed(1)) } : item
+      );
+      saveState(state);
+      return;
+    }
+
+    if (sql.includes('UPDATE inventory SET capacity_ml')) {
+      const capacityMl = Number(params[0]);
+      const id = String(params[params.length - 1]);
+      state.inventory = state.inventory.map((item) =>
+        item.id === id ? { ...item, capacity_ml: capacityMl, capacity_oz: Number(ozToMl(capacityMl).toFixed(1)) } : item
+      );
+      saveState(state);
+      return;
     }
   }
 }
@@ -467,6 +488,8 @@ export async function resetDatabase() {
   const state = loadState();
   state.orders = [];
   state.inventory = [...defaultInventory];
+  state.recipes = [...defaultRecipes];
+  state.settings = [{ ...defaultSettings }];
   saveState(state);
   console.log('[LocalDatabase.web] Database reset complete');
 }

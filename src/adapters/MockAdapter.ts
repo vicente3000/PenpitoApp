@@ -3,9 +3,10 @@ import { DeviceCommand, MachineState, PreparationStepId } from '../models';
 
 export class MockAdapter implements ICommunicationAdapter {
   private isConnected = false;
-  private stateChangeCallback: ((state: MachineState) => void) | null = null;
+  private stateListeners = new Set<(state: MachineState) => void>();
   private timeoutRef: ReturnType<typeof setTimeout> | null = null;
   private sequenceTimeouts: ReturnType<typeof setTimeout>[] = [];
+  private customSubscribers: Map<string, Set<(payload: string) => void>> = new Map();
 
   private currentState: MachineState = {
     isOn: false,
@@ -103,15 +104,39 @@ export class MockAdapter implements ICommunicationAdapter {
     return true;
   }
 
-  onStateChange(callback: (state: MachineState) => void): void {
-    this.stateChangeCallback = callback;
-    this.fireStateChange();
+  onStateChange(callback: (state: MachineState) => void): () => void {
+    this.stateListeners.add(callback);
+    callback({ ...this.currentState });
+    return () => {
+      this.stateListeners.delete(callback);
+    };
+  }
+
+  publish(topic: string, payload: string): void {
+    console.log(`[MockAdapter] publish: ${topic} -> ${payload}`);
+    const subs = this.customSubscribers.get(topic);
+    if (subs) {
+      subs.forEach((cb) => cb(payload));
+    }
+  }
+
+  subscribeCustom(topic: string, callback: (payload: string) => void): (() => void) {
+    console.log(`[MockAdapter] subscribeCustom: ${topic}`);
+    if (!this.customSubscribers.has(topic)) {
+      this.customSubscribers.set(topic, new Set());
+    }
+    this.customSubscribers.get(topic)!.add(callback);
+
+    return () => {
+      const subs = this.customSubscribers.get(topic);
+      if (subs) {
+        subs.delete(callback);
+      }
+    };
   }
 
   private fireStateChange() {
-    if (this.stateChangeCallback) {
-      this.stateChangeCallback({ ...this.currentState });
-    }
+    this.stateListeners.forEach((cb) => cb({ ...this.currentState }));
   }
 
   private clearTimers() {
@@ -129,7 +154,7 @@ export class MockAdapter implements ICommunicationAdapter {
   }
 
   private recipeNeedsCarbonation(recipeId: string) {
-    return recipeId === 'piscola' || recipeId === 'gin_tonic';
+    return recipeId === 'piscola';
   }
 
   private startPreparationSequence(recipeId: string, iceCount: number) {
@@ -190,6 +215,9 @@ export class MockAdapter implements ICommunicationAdapter {
             this.currentState.isDrinkReady = false;
             this.fireStateChange();
           }, 2200);
+          if (this.timeoutRef) {
+            this.sequenceTimeouts.push(this.timeoutRef);
+          }
           return;
         }
 

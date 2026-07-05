@@ -15,6 +15,8 @@ import { useInventoryStore } from './InventoryStore';
 import { useRecipeStore } from './RecipeStore';
 import { useSessionStore } from './SessionStore';
 
+const TAG = '[OrderStore]';
+
 type CreateOrderItemInput = {
   recipe: Recipe;
   options?: DrinkPreparationOptions;
@@ -54,6 +56,9 @@ function sortOrders(orders: DrinkOrder[]) {
   return [...orders].sort((a, b) => b.requested_at - a.requested_at);
 }
 
+let triggerInProgress = false;
+let hasProcessedRecovery = false;
+
 function upsertOrder(orders: DrinkOrder[], nextOrder: DrinkOrder) {
   return sortOrders([...orders.filter((order) => order.id !== nextOrder.id), nextOrder]);
 }
@@ -70,6 +75,14 @@ function hasOrderChanged(current: DrinkOrder, next: DrinkOrder) {
     JSON.stringify(current.skipped_step_ids) !== JSON.stringify(next.skipped_step_ids)
   );
 }
+
+const STATUS_PRIORITY: Record<string, number> = {
+  queued: 0,
+  preparing: 1,
+  ready: 2,
+  served: 3,
+  failed: 4,
+};
 
 function buildOrderId(recipeId: string, index: number) {
   return `${recipeId}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
@@ -166,80 +179,176 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     return createdOrders;
   },
   triggerNextQueuedOrder: async () => {
-    const { machineState, isConnected } = useAppStore.getState();
-    const state = get();
-
-    // No encolar el siguiente trago si la máquina no está ociosa, o si la bebida previa está lista esperando retiro
-    if (!isConnected || machineState.status !== 'idle' || machineState.isDrinkReady) {
+    if (triggerInProgress) {
       return false;
     }
+    triggerInProgress = true;
 
-    // Tampoco encolar si hay algún trago en preparación o listo esperando ser retirado (marcado como servido)
-    if (state.orders.some((order) => order.status === 'preparing' || order.status === 'ready')) {
-      return false;
-    }
+    try {
+      let didTrigger = false;
 
-    const nextQueued = sortOrders(state.orders)
-      .filter((order) => order.status === 'queued')
-      .sort((a, b) => (a.queued_at ?? a.requested_at) - (b.queued_at ?? b.requested_at))[0];
+      while (!didTrigger) {
+        const { machineState, connectionSnapshot } = useAppStore.getState();
+        const state = get();
 
-    if (!nextQueued) {
-      return false;
-    }
-
-    const sessionStore = useSessionStore.getState();
-    const tableSession = sessionStore.sessions.find((s) => s.table_number === nextQueued.table_number);
-    const hasActiveSession = tableSession && tableSession.guests && tableSession.guests.length > 0;
-
-    if (!hasActiveSession) {
-      console.log(`[OrderStore] Deleting stale queued order ${nextQueued.id} for table ${nextQueued.table_number} because there is no active session`);
-      await orderRepository.deleteOrder(nextQueued.id);
-      set((prevState) => ({
-        orders: prevState.orders.filter((o) => o.id !== nextQueued.id),
-      }));
-      publishOrdersUpdate(nextQueued.table_number, get().orders);
-      
-      // Devolver ingredientes
-      try {
-        const recipe = useRecipeStore.getState().recipes.find((r) => r.id === nextQueued.recipe_id);
-        if (recipe) {
-          await useInventoryStore.getState().restoreForRecipe(recipe, {
-            iceCount: nextQueued.ice_count,
-            alcoholOz: nextQueued.alcohol_oz,
-            mixerOz: nextQueued.mixer_oz,
-          });
+        if (connectionSnapshot?.broker !== 'connected' || machineState.status !== 'idle' || machineState.isDrinkReady) {
+          break;
         }
-      } catch (e) {
-        console.warn('[OrderStore] Failed to restore ingredients for stale order', e);
+
+        if (state.orders.some((order) => order.status === 'preparing' || order.status === 'ready')) {
+          break;
+        }
+
+        const queuedOrders = state.orders
+          .filter((order) => order.status === 'queued')
+          .sort((a, b) => (a.queued_at ?? a.requested_at) - (b.queued_at ?? b.requested_at));
+
+        const groupMinTime = new Map<string, number>();
+        for (const o of queuedOrders) {
+          const gid = o.group_id ?? '';
+          const t = o.queued_at ?? o.requested_at;
+          if (!groupMinTime.has(gid) || t < groupMinTime.get(gid)!) {
+            groupMinTime.set(gid, t);
+          }
+        }
+
+        const nextQueued = [...queuedOrders].sort((a, b) => {
+          const ga = groupMinTime.get(a.group_id ?? '') ?? 0;
+          const gb = groupMinTime.get(b.group_id ?? '') ?? 0;
+          if (ga !== gb) return ga - gb;
+          return (a.queued_at ?? a.requested_at) - (b.queued_at ?? b.requested_at);
+        })[0];
+
+        if (!nextQueued) {
+          break;
+        }
+
+        const sessionStore = useSessionStore.getState();
+        const tableSession = sessionStore.sessions.find((s) => s.table_number === nextQueued.table_number);
+        const hasActiveSession = tableSession && tableSession.guests && tableSession.guests.length > 0;
+
+        if (!hasActiveSession) {
+          console.log(`${TAG} Deleting stale queued order ${nextQueued.id} for table ${nextQueued.table_number} because there is no active session`);
+          await orderRepository.deleteOrder(nextQueued.id);
+          set((prevState) => ({
+            orders: prevState.orders.filter((o) => o.id !== nextQueued.id),
+          }));
+          publishOrdersUpdate(nextQueued.table_number, get().orders);
+
+          continue;
+        }
+
+        const recipe = useRecipeStore.getState().recipes.find((r) => r.id === nextQueued.recipe_id);
+        const orderOptions: DrinkPreparationOptions = {
+          iceCount: nextQueued.ice_count,
+          alcoholOz: nextQueued.alcohol_oz,
+          mixerOz: nextQueued.mixer_oz,
+          piscolaIntensity: nextQueued.piscola_intensity,
+        };
+
+        if (recipe && !useInventoryStore.getState().recipeIsAvailable(recipe, orderOptions)) {
+          console.warn(`${TAG} Insufficient inventory for order ${nextQueued.id}, marking as failed`);
+          const failedOrder: DrinkOrder = {
+            ...nextQueued,
+            status: 'failed',
+            finished_at: Date.now(),
+          };
+          await orderRepository.saveOrder(failedOrder);
+          set((prevState) => ({
+            orders: upsertOrder(prevState.orders, failedOrder),
+          }));
+          publishOrdersUpdate(nextQueued.table_number, get().orders);
+          continue;
+        }
+
+        const startedOrder = await startPreparation(nextQueued);
+        if (!startedOrder) {
+          break;
+        }
+
+        if (recipe) {
+          await useInventoryStore.getState().consumeForRecipe(recipe, orderOptions);
+        }
+
+        await orderRepository.saveOrder(startedOrder);
+        set((prevState) => ({
+          orders: upsertOrder(prevState.orders, startedOrder),
+          activeOrderId: startedOrder.id,
+        }));
+        publishOrdersUpdate(nextQueued.table_number, get().orders);
+        didTrigger = true;
       }
-      
-      // Intentar procesar la siguiente orden de la cola
-      return get().triggerNextQueuedOrder();
+
+      return didTrigger;
+    } finally {
+      triggerInProgress = false;
     }
-
-    const startedOrder = await startPreparation(nextQueued);
-    if (!startedOrder) {
-      return false;
-    }
-
-    await orderRepository.saveOrder(startedOrder);
-    set((prevState) => ({
-      orders: upsertOrder(prevState.orders, startedOrder),
-      activeOrderId: startedOrder.id,
-    }));
-    publishOrdersUpdate(nextQueued.table_number, get().orders);
-
-    return true;
   },
   syncFromMachine: async (machineState) => {
     const state = get();
     const activeOrderId =
       state.activeOrderId ?? state.orders.find((order) => order.status === 'preparing')?.id ?? null;
 
+    if (machineState.status === 'idle' && !machineState.isDrinkReady) {
+      hasProcessedRecovery = false;
+    }
+
     if (!activeOrderId) {
       if (machineState.status === 'idle' && !machineState.isDrinkReady) {
         await get().triggerNextQueuedOrder();
+        return;
       }
+
+      if (triggerInProgress) {
+        return;
+      }
+
+      if (hasProcessedRecovery) {
+        return;
+      }
+
+      const recoveryCandidate = [...state.orders]
+        .filter((o) => o.status === 'queued' && o.recipe_id === machineState.currentRecipeId)
+        .sort((a, b) => (a.queued_at ?? a.requested_at) - (b.queued_at ?? b.requested_at))[0] ?? null;
+
+      const recoveryOrder =
+        recoveryCandidate && recoveryCandidate.started_at ? recoveryCandidate : null;
+
+      const existingPrepared = state.orders.some(
+        (o) => o.recipe_id === machineState.currentRecipeId && (o.status === 'preparing' || o.status === 'ready')
+      );
+      if (recoveryOrder && machineState.status === 'preparing' && !existingPrepared) {
+        hasProcessedRecovery = true;
+        const recipe = useRecipeStore.getState().recipes.find((r) => r.id === recoveryOrder.recipe_id);
+        const orderOptions: DrinkPreparationOptions = {
+          iceCount: recoveryOrder.ice_count,
+          alcoholOz: recoveryOrder.alcohol_oz,
+          mixerOz: recoveryOrder.mixer_oz,
+          piscolaIntensity: recoveryOrder.piscola_intensity,
+        };
+        if (recipe && useInventoryStore.getState().recipeIsAvailable(recipe, orderOptions)) {
+          await useInventoryStore.getState().consumeForRecipe(recipe, orderOptions);
+        }
+
+        const boundOrder: DrinkOrder = {
+          ...recoveryOrder,
+          status: 'preparing',
+          active_step_id: machineState.activeStepId ?? 'cup_dispenser',
+          started_at: Date.now(),
+        };
+        await orderRepository.saveOrder(boundOrder);
+        set((prevState) => ({
+          orders: upsertOrder(prevState.orders, boundOrder),
+          activeOrderId: boundOrder.id,
+        }));
+        publishOrdersUpdate(boundOrder.table_number, get().orders);
+        return;
+      }
+
+      if (machineState.currentRecipeId && !machineState.isDrinkReady && machineState.status === 'idle') {
+        console.log(`${TAG} Ignoring residual ESP32 state with currentRecipeId=${machineState.currentRecipeId} - no matching queued orders`);
+      }
+
       return;
     }
 
@@ -284,6 +393,8 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       currentOrder.status === 'preparing' &&
       !currentOrder.is_drink_ready
     ) {
+      console.warn(`${TAG} Preparación interrumpida o fallida. Limpiando cola de comandos pendientes.`);
+      commandQueueService.clear();
       nextOrder = {
         ...currentOrder,
         status: 'failed',
@@ -347,12 +458,14 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     }));
     publishOrdersUpdate(order.table_number, get().orders);
 
-    // Enviar comando al ESP32 para informarle que la bebida ya fue retirada de la bandeja
-    await commandQueueService.enqueue({
+    const takConfirmed = await commandQueueService.enqueue({
       cmd: 'TAKEN',
       val: '',
       target: 'kraken',
     });
+    if (!takConfirmed) {
+      console.warn(`${TAG} TAKEN command not acknowledged by ESP32. The machine may still have isDrinkReady=true, blocking the next order.`);
+    }
   },
   deleteOrder: async (orderId) => {
     const order = get().orders.find((entry) => entry.id === orderId);
@@ -365,6 +478,9 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       return null;
     }
 
+    if (order.id === get().activeOrderId || order.status === 'queued') {
+      commandQueueService.clear();
+    }
     await orderRepository.deleteOrder(orderId);
     set((state) => ({
       orders: state.orders.filter((entry) => entry.id !== orderId),
@@ -372,27 +488,31 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     }));
     publishOrdersUpdate(order.table_number, get().orders);
 
-    // Restablecer ingredientes ya que la orden fue cancelada/eliminada
-    try {
-      const recipe = useRecipeStore.getState().recipes.find((r) => r.id === order.recipe_id);
-      if (recipe) {
-        await useInventoryStore.getState().restoreForRecipe(recipe, {
-          iceCount: order.ice_count,
-          alcoholOz: order.alcohol_oz,
-          mixerOz: order.mixer_oz,
-        });
+    if (order.status === 'preparing' || order.status === 'ready') {
+      try {
+        const recipe = useRecipeStore.getState().recipes.find((r) => r.id === order.recipe_id);
+        if (recipe) {
+          await useInventoryStore.getState().restoreForRecipe(recipe, {
+            iceCount: order.ice_count,
+            alcoholOz: order.alcohol_oz,
+            mixerOz: order.mixer_oz,
+          });
+        }
+      } catch (e) {
+        console.warn(`${TAG} Failed to restore ingredients for deleted order`, e);
       }
-    } catch (e) {
-      console.warn('[OrderStore] Failed to restore ingredients for deleted order', e);
     }
 
     await get().triggerNextQueuedOrder();
     return order;
   },
   clearTableOrders: async (tableNumber) => {
+    commandQueueService.clear();
     await orderRepository.deleteOrdersForTable(tableNumber);
     set((prevState) => ({
-      orders: prevState.orders.filter((order) => order.table_number !== tableNumber),
+      orders: prevState.orders.filter(
+        (order) => order.table_number !== tableNumber || order.status === 'served'
+      ),
       activeOrderId:
         prevState.orders.find((order) => order.id === prevState.activeOrderId)?.table_number === tableNumber
           ? null
@@ -401,7 +521,22 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     publishOrdersUpdate(tableNumber, []);
   },
   syncOrdersFromNetwork: async (tableNumber, nextOrders) => {
+    const currentTableOrders = get().orders.filter((o) => o.table_number === tableNumber);
+    const nextIds = new Set(nextOrders.map((o) => o.id));
+    for (const old of currentTableOrders) {
+      if (!nextIds.has(old.id)) {
+        await orderRepository.deleteOrder(old.id);
+      }
+    }
+
     for (const order of nextOrders) {
+      const existing = currentTableOrders.find((o) => o.id === order.id);
+      if (existing && !hasOrderChanged(existing, order)) {
+        continue;
+      }
+      if (existing && (STATUS_PRIORITY[existing.status] ?? -1) > (STATUS_PRIORITY[order.status] ?? -1)) {
+        continue;
+      }
       await orderRepository.saveOrder(order);
     }
 
@@ -410,7 +545,15 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     }
 
     const localOthers = get().orders.filter((o) => o.table_number !== tableNumber);
-    const updatedList = sortOrders([...localOthers, ...nextOrders]);
+    const localTable = get().orders.filter((o) => o.table_number === tableNumber);
+    const mergedTable = nextOrders.map((netOrder) => {
+      const local = localTable.find((o) => o.id === netOrder.id);
+      if (local && (STATUS_PRIORITY[local.status] ?? -1) > (STATUS_PRIORITY[netOrder.status] ?? -1)) {
+        return local;
+      }
+      return netOrder;
+    });
+    const updatedList = sortOrders([...localOthers, ...mergedTable]);
     const activeOrder = updatedList.find((order) => order.status === 'preparing') ?? null;
 
     set({

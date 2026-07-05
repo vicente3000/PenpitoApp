@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { StyleSheet, View, ActivityIndicator, Text } from 'react-native';
+import { StyleSheet, View, ActivityIndicator, Text, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Colors } from '../src/constants/Colors';
@@ -9,7 +9,9 @@ import { useSettingsStore } from '../src/stores/SettingsStore';
 import { useInventoryStore } from '../src/stores/InventoryStore';
 import { useOrderStore } from '../src/stores/OrderStore';
 import { useAppStore } from '../src/stores/AppStore';
+import { useSessionStore } from '../src/stores/SessionStore';
 import { deviceService } from '../src/services/DeviceService';
+import { commandQueueService } from '../src/services/CommandQueueService';
 
 const defaultEsp32WifiConfig: Record<Esp32DeviceKey, Esp32WifiConfig> = {
   kraken: { ssid: '', password: '', mqttHost: '', mqttPort: '1883' },
@@ -23,9 +25,9 @@ export default function AdminRoute() {
     refillBottle,
   } = useInventoryStore();
   const { orders, markOrderServed } = useOrderStore();
-  const { isConnected, machineState } = useAppStore();
+  const { isConnected, connectionSnapshot, machineState } = useAppStore();
 
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [adminUnlocked, setAdminUnlocked] = useState(__DEV__);
   const [adminPassword, setAdminPassword] = useState('');
   const [adminError, setAdminError] = useState('');
 
@@ -47,13 +49,57 @@ export default function AdminRoute() {
       setDispenseSpeedMlS(String(settings.dispense_speed_ml_s));
       setIceDispenseTimeS(String(settings.ice_dispense_time_s));
       setAutoCleanEnabled(settings.auto_clean_enabled);
-      setPumpCalibrations(settings.pump_calibrations || [24.2, 23.1, 21.1, 24.0, 24.3, 15.9, 23.1]);
+      setPumpCalibrations(settings.pump_calibrations || [24.7, 23.6, 20.6, 24.3, 23.8, 16.1, 23.6]);
       setCarriagePositions(settings.carriage_positions || [3600, 2600, 800, 100, 1860, 1600, 1350, 1200]);
     }
   }, [settings]);
 
+  // Sincronizar todas las mesas (1-10) vía MQTT en la consola de administración
+  useEffect(() => {
+    const unsubs: (() => void)[] = [];
+
+    for (let tableNum = 1; tableNum <= 10; tableNum++) {
+      const unsubSession = deviceService.subscribeCustom(
+        `penpito/table/${tableNum}/session`,
+        (payload) => {
+          try {
+            const session = JSON.parse(payload);
+            useSessionStore.getState().syncSessionFromNetwork(tableNum, session);
+          } catch {
+            // ignore
+          }
+        }
+      );
+      if (unsubSession) unsubs.push(unsubSession);
+
+      const unsubOrders = deviceService.subscribeCustom(
+        `penpito/table/${tableNum}/orders`,
+        (payload) => {
+          try {
+            const parsedOrders = JSON.parse(payload);
+            void useOrderStore.getState().syncOrdersFromNetwork(tableNum, parsedOrders);
+          } catch {
+            // ignore
+          }
+        }
+      );
+      if (unsubOrders) unsubs.push(unsubOrders);
+
+      // Solicitar sincronización inicial
+      deviceService.publish(
+        `penpito/table/${tableNum}/request`,
+        JSON.stringify({ type: 'SYNC_REQUEST' })
+      );
+    }
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, []);
+
   const handleAdminLogin = () => {
-    if (adminPassword === 'admin123') {
+    const expectedPassword = process.env.EXPO_PUBLIC_ADMIN_PASSWORD || 'admin123';
+    if (adminPassword === expectedPassword) {
       setAdminUnlocked(true);
       setAdminError('');
     } else {
@@ -91,7 +137,7 @@ export default function AdminRoute() {
 
     // Sync calibrations with ESP32 via MQTT
     if (isConnected) {
-      void deviceService.sendCommand({
+      void commandQueueService.enqueue({
         cmd: 'SET_CALIB',
         target: 'kraken',
         rates: nextCalibs,
@@ -101,6 +147,11 @@ export default function AdminRoute() {
 
     setSettingsFeedback('Parámetros guardados y sincronizados.');
     setTimeout(() => setSettingsFeedback(''), 3000);
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.alert('Parámetros guardados y sincronizados.');
+    } else {
+      Alert.alert('Éxito', 'Parámetros guardados y sincronizados.');
+    }
   };
 
   const handleRefillBottle = async (bottleId: string) => {
@@ -181,6 +232,7 @@ export default function AdminRoute() {
           iceDispenseTimeS={iceDispenseTimeS}
           inventory={inventory}
           isConnected={isConnected}
+          connectionSnapshot={connectionSnapshot}
           machineState={machineState}
           settings={settings}
           onBack={() => router.replace('/')}

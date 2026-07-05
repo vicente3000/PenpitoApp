@@ -8,6 +8,7 @@ const SESSION_STORAGE_KEY = 'penpito.table.sessions';
 interface SessionState {
   sessions: TableSession[];
   deviceGuestName: string | null;
+  deviceTableNumber: number | null;
   loadSessions: () => Promise<void>;
   ensureTableSession: (tableNumber: number, qrValue: string) => TableSession;
   joinTable: (tableNumber: number, qrValue: string, guestName: string) => SessionGuest;
@@ -20,6 +21,8 @@ interface SessionState {
   requestBill: (tableNumber: number, requested: boolean) => void;
   syncSessionFromNetwork: (tableNumber: number, nextSession: TableSession) => void;
   setDeviceGuestName: (name: string | null) => Promise<void>;
+  setDeviceTableNumber: (tableNumber: number | null) => Promise<void>;
+  leaveCurrentTable: () => void;
 }
 
 function makeGuestId(tableNumber: number) {
@@ -55,15 +58,18 @@ function publishSessionUpdate(tableNumber: number, sessions: TableSession[]) {
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   deviceGuestName: null,
+  deviceTableNumber: null,
   loadSessions: async () => {
     try {
       const raw = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
       const guestName = await AsyncStorage.getItem('penpito.device.guestName');
+      const tableNumberRaw = await AsyncStorage.getItem('penpito.device.tableNumber');
       
       const parsed = raw ? (JSON.parse(raw) as TableSession[]) : [];
       const sessions = Array.isArray(parsed) ? parsed : [];
+      const deviceTableNumber = tableNumberRaw ? parseInt(tableNumberRaw, 10) : null;
       
-      set({ sessions, deviceGuestName: guestName });
+      set({ sessions, deviceGuestName: guestName, deviceTableNumber });
     } catch {
       // Invalid persisted data is ignored
     }
@@ -230,6 +236,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await AsyncStorage.setItem('penpito.device.guestName', name);
     } else {
       await AsyncStorage.removeItem('penpito.device.guestName');
+      await get().setDeviceTableNumber(null);
     }
+  },
+  setDeviceTableNumber: async (tableNumber) => {
+    set({ deviceTableNumber: tableNumber });
+    if (tableNumber !== null) {
+      await AsyncStorage.setItem('penpito.device.tableNumber', String(tableNumber));
+    } else {
+      await AsyncStorage.removeItem('penpito.device.tableNumber');
+    }
+  },
+  leaveCurrentTable: () => {
+    const { deviceGuestName: guestName, deviceTableNumber: tableNumber, sessions } = get();
+    if (!guestName || tableNumber === null) return;
+
+    const session = sessions.find((s) => s.table_number === tableNumber);
+    if (!session) return;
+
+    const guest = session.guests.find(
+      (g) => g.name.trim().toLowerCase() === guestName.trim().toLowerCase()
+    );
+    if (!guest) return;
+
+    get().removeGuestFromTable(tableNumber, guest.id);
   },
 }));

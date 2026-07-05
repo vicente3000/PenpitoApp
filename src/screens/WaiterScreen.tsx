@@ -10,7 +10,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Colors } from '../constants/Colors';
 import { DrinkOrder, SessionGuest, TableSession } from '../models';
 import { useRecipeStore } from '../stores/RecipeStore';
-import { formatCurrency } from '../utils/drinkConfig';
+import { formatCurrency, getOrderDisplayName } from '../utils/drinkConfig';
 import { getOrderStatusLabel, preparationSteps } from '../utils/preparation';
 import { formatTableLabel } from '../utils/tableQr';
 import { Button } from '../components/ui/Button';
@@ -86,7 +86,7 @@ export function WaiterScreen({
   sessions,
 }: WaiterScreenProps) {
   const { recipes } = useRecipeStore();
-  const { machineState, isConnected } = useAppStore();
+  const { machineState, isConnected, connectionSnapshot } = useAppStore();
   const [dialogVisible, setDialogVisible] = useState(false);
   const [billingTable, setBillingTable] = useState<{
     tableNumber: number;
@@ -122,12 +122,14 @@ export function WaiterScreen({
         {
           text: 'DETENER KRAKEN',
           variant: 'danger',
-          onPress: () => {
-            void deviceService.sendCommand({ cmd: 'POWER', val: 'OFF', target: 'kraken' });
+          onPress: async () => {
+            const success = await deviceService.sendCommand({ cmd: 'POWER', val: 'OFF', target: 'kraken' });
             showCustomDialog(
-              'Detenido',
-              'Comando de parada de emergencia enviado con éxito.',
-              [{ text: 'Aceptar', variant: 'primary' }]
+              success ? 'Máquina detenida' : 'Confirmación no recibida',
+              success
+                ? 'El comando de parada de emergencia fue confirmado por el hardware.'
+                : 'Se envió la orden de parada pero el ESP32 no respondió a tiempo. Verifique físicamente el robot.',
+              [{ text: 'Aceptar', variant: success ? 'primary' : 'danger' }]
             );
           },
         },
@@ -152,17 +154,19 @@ export function WaiterScreen({
     orders: DrinkOrder[];
     session: TableSession | null;
   }) => {
-    const tableSubtotal = table.orders.reduce(
+    const billableOrders = table.orders.filter((o) => o.status !== 'failed');
+    const tableSubtotal = billableOrders.reduce(
       (total, order) => total + getRecipePriceLocal(order.recipe_id),
-      0
+      0,
     );
     const tableTipPercentage = customTipPercentage;
     const tableTipAmount = Math.round(tableSubtotal * (tableTipPercentage / 100));
     const tableTotal = tableSubtotal + tableTipAmount;
 
     const drinkCounts: Record<string, number> = {};
-    table.orders.forEach((o) => {
-      drinkCounts[o.recipe_name] = (drinkCounts[o.recipe_name] || 0) + 1;
+    billableOrders.forEach((o) => {
+      const name = getOrderDisplayName(o);
+      drinkCounts[name] = (drinkCounts[name] || 0) + 1;
     });
 
     const numGuests = table.session?.guests.length || 1;
@@ -224,7 +228,7 @@ export function WaiterScreen({
               <View key={name} style={styles.billingItemRow}>
                 <Text style={styles.billingItemName}>{count}x {name}</Text>
                 <Text style={styles.billingItemPrice}>
-                  {formatCurrency(count * getRecipePriceLocal(table.orders.find((o) => o.recipe_name === name)?.recipe_id || ''))}
+                  {formatCurrency(count * getRecipePriceLocal(table.orders.find((o) => getOrderDisplayName(o) === name)?.recipe_id || ''))}
                 </Text>
               </View>
             ))}
@@ -468,32 +472,66 @@ export function WaiterScreen({
           <View style={styles.emergencyRow}>
             <FontAwesome name="exclamation-triangle" size={24} color={Colors.error} />
             <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={{ fontSize: 16, fontWeight: 'bold', color: Colors.text }}>Máquina APAGADA</Text>
+              <Text style={{ fontSize: 16, fontWeight: 'bold', color: Colors.text }}>Maquina APAGADA</Text>
               <Text style={{ fontSize: 12, color: Colors.textMuted, marginTop: 2 }}>
-                La corriente está desactivada por seguridad o parada de emergencia.
+                La corriente esta desactivada por seguridad o parada de emergencia.
               </Text>
             </View>
-            <Button
-              title="Encender"
-              variant="primary"
-              size="sm"
-              onPress={async () => {
-                const success = await deviceService.sendCommand({ cmd: 'POWER', val: 'ON', target: 'kraken' });
-                if (success) {
-                  showCustomDialog(
-                    'Máquina Encendida',
-                    'Se ha reactivado la corriente y reiniciado la máquina con éxito.',
-                    [{ text: 'Aceptar', variant: 'primary' }]
-                  );
-                }
-              }}
-              style={{ backgroundColor: Colors.success, borderColor: Colors.success, minHeight: 32, paddingHorizontal: 12 } as any}
-            />
+            {connectionSnapshot?.deviceOnline ? (
+              <Button
+                title="Encender"
+                variant="primary"
+                size="sm"
+                onPress={async () => {
+                  const success = await deviceService.sendCommand({ cmd: 'POWER', val: 'ON', target: 'kraken' });
+                  if (success) {
+                    showCustomDialog(
+                      'Maquina Encendida',
+                      'Se ha reactivado la corriente y reiniciado la maquina con exito.',
+                      [{ text: 'Aceptar', variant: 'primary' }]
+                    );
+                  }
+                }}
+                style={{ backgroundColor: Colors.success, borderColor: Colors.success, minHeight: 32, paddingHorizontal: 12 } as any}
+              />
+            ) : (
+              <Text style={{ fontSize: 12, color: Colors.textMuted, fontWeight: '600' }}>ESP32 fuera de linea</Text>
+            )}
           </View>
         </Card>
-      ) : (
+      ) : connectionSnapshot?.deviceOnline ? (
         <PressableCardEmergency onPress={handleEmergencyStop} />
+      ) : (
+        <Card style={[styles.emergencyCard, { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderColor: '#F59E0B' }] as any}>
+          <View style={styles.emergencyRow}>
+            <FontAwesome name="exclamation-triangle" size={24} color="#F59E0B" />
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#F59E0B' }}>ESP32 fuera de linea</Text>
+              <Text style={{ fontSize: 12, color: Colors.textMuted, marginTop: 2 }}>
+                La maquina no responde en la red. Parada de emergencia no disponible.
+              </Text>
+            </View>
+          </View>
+        </Card>
       )}
+
+      {connectionSnapshot && connectionSnapshot.broker !== 'connected' ? (
+        <View style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)', borderColor: Colors.error, borderWidth: 1, padding: 12, borderRadius: 12, marginBottom: 16, flexDirection: 'row', alignItems: 'center' }}>
+          <FontAwesome name="wifi" size={18} color={Colors.error} style={{ marginRight: 10 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: Colors.error, fontWeight: 'bold', fontSize: 14 }}>Sin Conexion al Broker MQTT</Text>
+            <Text style={{ color: Colors.textMuted, fontSize: 12, marginTop: 2 }}>El broker MQTT no responde. Verifica la red Wi-Fi o IP del servidor.</Text>
+          </View>
+        </View>
+      ) : connectionSnapshot && !connectionSnapshot.deviceOnline ? (
+        <View style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', borderColor: '#F59E0B', borderWidth: 1, padding: 12, borderRadius: 12, marginBottom: 16, flexDirection: 'row', alignItems: 'center' }}>
+          <FontAwesome name="exclamation-triangle" size={18} color="#F59E0B" style={{ marginRight: 10 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#F59E0B', fontWeight: 'bold', fontSize: 14 }}>Broker Conectado - ESP32 Offline</Text>
+            <Text style={{ color: Colors.textMuted, fontSize: 12, marginTop: 2 }}>La maquina no responde en la red. Puedes gestionar mesas pero las ordenes no se prepararan.</Text>
+          </View>
+        </View>
+      ) : null}
 
       <View style={styles.topBar}>
         <View>
@@ -522,7 +560,8 @@ export function WaiterScreen({
       ) : (
         tables.map((table) => {
           const tableTipPercentage = table.session?.tip_percentage ?? 0;
-          const tableSubtotal = table.orders.reduce(
+          const billableOrders = table.orders.filter((o) => o.status !== 'failed');
+          const tableSubtotal = billableOrders.reduce(
             (total, order) => total + getRecipePriceLocal(order.recipe_id),
             0
           );
@@ -542,9 +581,9 @@ export function WaiterScreen({
               <View style={styles.tableHeader}>
                 <Text style={styles.tableTitle as any}>
                   {formatTableLabel(table.tableNumber)}
-                  {table.orders.filter(o => o.status !== 'served').length > 0 ? (
+                  {table.orders.filter(o => o.status !== 'served' && o.status !== 'failed').length > 0 ? (
                     <Text style={{ fontSize: 14, fontWeight: 'normal', color: Colors.warning }}>
-                      {` (${table.orders.filter(o => o.status !== 'served').length} pendientes)`}
+                      {` (${table.orders.filter(o => o.status !== 'served' && o.status !== 'failed').length} pendientes)`}
                     </Text>
                   ) : (
                     <Text style={{ fontSize: 14, fontWeight: 'normal', color: Colors.success }}>
@@ -617,7 +656,7 @@ export function WaiterScreen({
                 {table.orders.filter((order) => order.status !== 'served').map((order) => (
                   <View key={order.id} style={styles.waiterOrderCard}>
                     <View style={styles.waiterOrderInfo}>
-                      <Text style={styles.orderTitle as any}>{order.recipe_name}</Text>
+                      <Text style={styles.orderTitle as any}>{getOrderDisplayName(order)}</Text>
                       <Text style={styles.orderMeta as any}>
                         {order.guest_name ? `${order.guest_name} · ` : ''}
                         {order.status === 'queued' && 'En cola'}

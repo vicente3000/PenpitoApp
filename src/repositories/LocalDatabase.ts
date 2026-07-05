@@ -17,111 +17,91 @@ let initPromise: Promise<void> | null = null;
 
 const recipeSeedStatements = [
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
-   VALUES (
-     'piscola',
-     'Piscola',
-     'Pisco con Coca-Cola con perfiles suave, normal y fuerte.',
-     NULL,
-     '[{"ingredient_name":"Pisco","amount_ml":180.0},{"ingredient_name":"Coca-Cola","amount_ml":350.0}]',
-     20,
-     14,
-     1,
-     7000
-   )`,
+    VALUES (
+      'piscola',
+      'Piscola',
+      'Pisco con Coca-Cola. Suave (45+165ml), Normal (60+180ml) o Fuerte (90+150ml). 4 hielos.',
+      NULL,
+      '[{"ingredient_name":"Pisco","amount_ml":90.0},{"ingredient_name":"Coca-Cola","amount_ml":150.0}]',
+      28,
+      14,
+      1,
+      7000
+    )`,
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
-     'negroni',
-     'Negroni',
-     'Clasico coctel de gin, campari y vermut rosso con 3 hielos.',
-     NULL,
-     '[{"ingredient_name":"Gin","amount_ml":60.0},{"ingredient_name":"Campari","amount_ml":300.0},{"ingredient_name":"Vermut Rosso","amount_ml":60.0}]',
-     18,
-     24,
-     1,
-     8000
-   )`,
+      'negroni',
+      'Negroni',
+      'Clasico coctel de gin, campari y vermut rosso. 3 hielos.',
+      NULL,
+      '[{"ingredient_name":"Gin","amount_ml":75.0},{"ingredient_name":"Campari","amount_ml":75.0},{"ingredient_name":"Vermut Rosso","amount_ml":75.0}]',
+      22,
+      24,
+      1,
+      8000
+    )`,
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
-     'boulevardier',
-     'Boulevardier',
-     'Elegante variacion del Negroni usando Whisky en lugar de Gin.',
-     NULL,
-     '[{"ingredient_name":"Whisky","amount_ml":60.0},{"ingredient_name":"Campari","amount_ml":300.0},{"ingredient_name":"Vermut Rosso","amount_ml":60.0}]',
-     18,
-     28,
-     1,
-     8500
-   )`,
+      'boulevardier',
+      'Boulevardier',
+      'Elegante variacion del Negroni usando Whisky. 3 hielos.',
+      NULL,
+      '[{"ingredient_name":"Whisky","amount_ml":75.0},{"ingredient_name":"Campari","amount_ml":75.0},{"ingredient_name":"Vermut Rosso","amount_ml":75.0}]',
+      22,
+      28,
+      1,
+      8500
+    )`,
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
-     'godfather',
-     'Godfather',
-     'Mezcla clasica de Whisky y Amaretto con 3 hielos.',
-     NULL,
-     '[{"ingredient_name":"Whisky","amount_ml":120.0},{"ingredient_name":"Amaretto","amount_ml":60.0}]',
-     15,
-     35,
-     1,
-     9000
-   )`,
+      'godfather',
+      'Godfather',
+      'Mezcla clasica de Whisky y Amaretto. 3 hielos.',
+      NULL,
+      '[{"ingredient_name":"Whisky","amount_ml":150.0},{"ingredient_name":"Amaretto","amount_ml":75.0}]',
+      20,
+      35,
+      1,
+      9000
+    )`,
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
-     'americano',
-     'Americano',
-     'Suave coctel a base de Campari y Vermut Rosso.',
-     NULL,
-     '[{"ingredient_name":"Campari","amount_ml":450.0},{"ingredient_name":"Vermut Rosso","amount_ml":90.0}]',
-     15,
-     12,
-     1,
-     7500
-   )`,
+      'americano',
+      'Americano',
+      'Suave coctel a base de Campari y Vermut Rosso. 3 hielos.',
+      NULL,
+      '[{"ingredient_name":"Campari","amount_ml":100.0},{"ingredient_name":"Vermut Rosso","amount_ml":100.0}]',
+      19,
+      12,
+      1,
+      7500
+    )`,
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
-     'whisky_rocks',
-     'Whisky a las Rocas',
-     'Whisky premium servido a las rocas con hielo.',
-     NULL,
-     '[{"ingredient_name":"Whisky","amount_ml":120.0}]',
-     12,
-     40,
-     1,
-     8000
-   )`,
+      'whisky_rocks',
+      'Whisky a las Rocas',
+      'Whisky premium servido a las rocas. 3 hielos.',
+      NULL,
+      '[{"ingredient_name":"Whisky","amount_ml":180.0}]',
+      15,
+      40,
+      1,
+      8000
+    )`,
   `INSERT OR REPLACE INTO recipes (id, name, description, image_url, items, est_time_seconds, abv, is_available, price)
    VALUES (
-     'campari_rocks',
-     'Campari a las Rocas',
-     'Campari refrescante servido a las rocas con hielo.',
-     NULL,
-     '[{"ingredient_name":"Campari","amount_ml":600.0}]',
-     12,
-     25,
-     1,
-     7500
-   )`,
+      'campari_rocks',
+      'Campari a las Rocas',
+      'Campari refrescante servido a las rocas. 3 hielos.',
+      NULL,
+      '[{"ingredient_name":"Campari","amount_ml":180.0}]',
+      15,
+      25,
+      1,
+      7500
+    )`,
 ];
 
-const inventorySeedStatements = ingredientCatalog.map(
-  (ingredient) => `INSERT OR IGNORE INTO inventory (
-     id,
-     ingredient_name,
-     display_name,
-     capacity_oz,
-     remaining_oz,
-     capacity_ml,
-     remaining_ml
-   )
-   VALUES (
-     '${ingredient.id}',
-     '${ingredient.ingredient_name}',
-     '${ingredient.display_name}',
-     ${Number(mlToOz(DEFAULT_BOTTLE_CAPACITY_ML).toFixed(1))},
-     ${Number(mlToOz(DEFAULT_BOTTLE_CAPACITY_ML).toFixed(1))},
-     ${DEFAULT_BOTTLE_CAPACITY_ML},
-     ${DEFAULT_BOTTLE_CAPACITY_ML}
-   )`
-);
 
 async function openDb(): Promise<DbHandle> {
   if (dbPromise == null) {
@@ -284,15 +264,45 @@ async function seedSettings(db: DbHandle) {
       bottle_capacity_ml,
       dispense_speed_ml_s,
       ice_dispense_time_s,
-      auto_clean_enabled
-    ) VALUES (?, ?, ?, ?, ?)`,
-    [DEFAULT_SETTINGS_ID, DEFAULT_BOTTLE_CAPACITY_ML, 15, 2, 1]
+      auto_clean_enabled,
+      pump_calibrations,
+      carriage_positions
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      DEFAULT_SETTINGS_ID,
+      DEFAULT_BOTTLE_CAPACITY_ML,
+      15,
+      2,
+      1,
+      '[24.7, 23.6, 20.6, 24.3, 23.8, 16.1, 23.6]',
+      '[3600, 2600, 800, 100, 1860, 1600, 1350, 1200]'
+    ]
   );
 }
 
 async function seedInventory(db: DbHandle) {
-  for (const statement of inventorySeedStatements) {
-    await db.execAsync(statement);
+  const capOz = Number(mlToOz(DEFAULT_BOTTLE_CAPACITY_ML).toFixed(1));
+  for (const item of ingredientCatalog) {
+    await db.runAsync(
+      `INSERT OR IGNORE INTO inventory (
+        id,
+        ingredient_name,
+        display_name,
+        capacity_oz,
+        remaining_oz,
+        capacity_ml,
+        remaining_ml
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        item.id,
+        item.ingredient_name,
+        item.display_name,
+        capOz,
+        capOz,
+        DEFAULT_BOTTLE_CAPACITY_ML,
+        DEFAULT_BOTTLE_CAPACITY_ML,
+      ]
+    );
   }
 }
 
@@ -350,10 +360,12 @@ async function performInit() {
             bottle_capacity_ml INTEGER NOT NULL,
             dispense_speed_ml_s REAL NOT NULL,
             ice_dispense_time_s INTEGER NOT NULL,
-            auto_clean_enabled INTEGER NOT NULL
+            auto_clean_enabled INTEGER NOT NULL,
+            pump_calibrations TEXT,
+            carriage_positions TEXT
           );
-          INSERT OR IGNORE INTO settings_new (id, bottle_capacity_ml, dispense_speed_ml_s, ice_dispense_time_s, auto_clean_enabled)
-          SELECT id, bottle_capacity_ml, dispense_speed_ml_s, ice_dispense_time_s, auto_clean_enabled FROM settings;
+          INSERT OR IGNORE INTO settings_new (id, bottle_capacity_ml, dispense_speed_ml_s, ice_dispense_time_s, auto_clean_enabled, pump_calibrations, carriage_positions)
+          SELECT id, bottle_capacity_ml, dispense_speed_ml_s, ice_dispense_time_s, auto_clean_enabled, pump_calibrations, carriage_positions FROM settings;
           DROP TABLE settings;
           ALTER TABLE settings_new RENAME TO settings;
         `);
@@ -395,8 +407,12 @@ export async function resetDatabase() {
   const db = await getDb();
   await db.execAsync(`
     DELETE FROM orders;
+    DELETE FROM inventory;
+    DELETE FROM recipes;
+    DELETE FROM settings;
   `);
-  await db.execAsync(`DELETE FROM inventory;`);
+  await seedSettings(db);
   await seedInventory(db);
+  await seedRecipes(db);
   console.log('[LocalDatabase] Database reset complete');
 }

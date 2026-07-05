@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Alert, StyleSheet } from 'react-native';
+import { Alert, Platform, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors } from '../../src/constants/Colors';
@@ -10,7 +10,8 @@ import { useSettingsStore } from '../../src/stores/SettingsStore';
 import { useOrderStore } from '../../src/stores/OrderStore';
 import { useSessionStore } from '../../src/stores/SessionStore';
 import { Recipe, DrinkPreparationOptions, PiscolaIntensity } from '../../src/models';
-import { getRecipeDefaultOptions } from '../../src/utils/drinkConfig';
+import { getRecipeDefaultOptions, getRecipeUsageMl } from '../../src/utils/drinkConfig';
+import { Button } from '../../src/components/ui/Button';
 import { Dialog, DialogAction } from '../../src/components/ui/Dialog';
 
 export default function TableRoute() {
@@ -19,7 +20,7 @@ export default function TableRoute() {
 
   const submittingRef = useRef(false);
   const { recipes } = useRecipeStore();
-  const { inventory, recipeIsAvailable, consumeForRecipe } = useInventoryStore();
+  const { inventory, recipeIsAvailable } = useInventoryStore();
   const { settings } = useSettingsStore();
   const { orders, createOrderBatch, deleteOrder } = useOrderStore();
   const {
@@ -31,6 +32,8 @@ export default function TableRoute() {
     setTipPercentage,
     deviceGuestName,
     setDeviceGuestName,
+    deviceTableNumber,
+    setDeviceTableNumber,
   } = useSessionStore();
 
   const [guestNameInput, setGuestNameInput] = useState('');
@@ -59,8 +62,11 @@ export default function TableRoute() {
   // Autologin guest if already stored
   useEffect(() => {
     if (isNaN(tableNumber)) return;
-    const session = ensureTableSession(tableNumber, `PENPITO:MESA:${String(tableNumber).padStart(2, '0')}`);
-    
+
+    void setDeviceTableNumber(tableNumber);
+    const sessionQr = `PENPITO:MESA:${String(tableNumber).padStart(2, '0')}`;
+    const session = ensureTableSession(tableNumber, sessionQr);
+
     if (deviceGuestName) {
       const cleanName = deviceGuestName.trim();
       const existingGuest = session.guests.find(
@@ -70,7 +76,7 @@ export default function TableRoute() {
         setCurrentGuestId(existingGuest.id);
         setGuestNameInput(existingGuest.name);
       } else {
-        const guest = joinTable(tableNumber, session.qr_value, cleanName);
+        const guest = joinTable(tableNumber, sessionQr, cleanName);
         setCurrentGuestId(guest.id);
         setGuestNameInput(guest.name);
       }
@@ -79,6 +85,30 @@ export default function TableRoute() {
       setGuestNameInput('');
     }
   }, [tableNumber, deviceGuestName]);
+
+  const wasOnThisTable = deviceTableNumber === tableNumber;
+  const sessionExists = sessions.some((s) => s.table_number === tableNumber);
+
+  useEffect(() => {
+    if (!deviceGuestName || !wasOnThisTable || sessionExists) return;
+
+    void setDeviceGuestName(null);
+    setCurrentGuestId(null);
+    setGuestNameInput('');
+    setCart([]);
+
+    const title = 'Mesa pagada';
+    const msg = 'La cuenta de esta mesa ha sido pagada. Tu sesion ha finalizado.';
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.alert(msg);
+      router.replace('/' as any);
+    } else {
+      Alert.alert(title, msg, [
+        { text: 'Aceptar', onPress: () => router.replace('/' as any) }
+      ]);
+    }
+  }, [sessionExists, deviceGuestName, wasOnThisTable]);
 
   const handleJoinTable = () => {
     if (!guestNameInput.trim()) {
@@ -91,6 +121,7 @@ export default function TableRoute() {
     const guest = joinTable(tableNumber, session.qr_value, guestNameInput);
     setCurrentGuestId(guest.id);
     void setDeviceGuestName(guest.name);
+    void setDeviceTableNumber(tableNumber);
   };
 
   const handleStartNewGuest = () => {
@@ -150,6 +181,27 @@ export default function TableRoute() {
       return;
     }
 
+    const totalUsages: Record<string, number> = {};
+    for (const item of cart) {
+      const usages = getRecipeUsageMl(item.recipe, item.options);
+      for (const u of usages) {
+        totalUsages[u.ingredient_name] = (totalUsages[u.ingredient_name] || 0) + u.amount_ml * item.quantity;
+      }
+    }
+
+    for (const [ingName, totalNeeded] of Object.entries(totalUsages)) {
+      const bottle = inventory.find((b) => b.ingredient_name === ingName);
+      if (!bottle || bottle.remaining_ml < totalNeeded) {
+        const available = bottle ? Math.round(bottle.remaining_ml) : 0;
+        showCustomDialog(
+          'Stock insuficiente en carrito',
+          `El total de tu pedido requiere ${Math.round(totalNeeded)}ml de ${ingName}, pero solo quedan ${available}ml en la máquina. Por favor reduce las cantidades.`,
+          [{ text: 'Entendido', variant: 'outline' }]
+        );
+        return;
+      }
+    }
+
     showCustomDialog(
       'Confirmar pedido',
       `Vas a enviar ${cart.reduce((total, item) => total + item.quantity, 0)} tragos a tu mesa.`,
@@ -159,31 +211,31 @@ export default function TableRoute() {
           text: 'Pedir tragos',
           variant: 'primary',
           onPress: async () => {
-            await createOrderBatch({
-              items: cart.map((item) => ({
-                recipe: item.recipe,
-                options: item.options,
-                quantity: item.quantity,
-                guest_name: currentGuest.name,
-              })),
-              table_number: tableNumber,
-              qr_value: `PENPITO:MESA:${String(tableNumber).padStart(2, '0')}`,
-              split_method: activeTableSession.split_method,
-              group_id: `table-${tableNumber}-${Date.now()}`,
-            });
+            if (submittingRef.current) return;
+            submittingRef.current = true;
+            try {
+              await createOrderBatch({
+                items: cart.map((item) => ({
+                  recipe: item.recipe,
+                  options: item.options,
+                  quantity: item.quantity,
+                  guest_name: currentGuest.name,
+                })),
+                table_number: tableNumber,
+                qr_value: `PENPITO:MESA:${String(tableNumber).padStart(2, '0')}`,
+                split_method: activeTableSession.split_method,
+                group_id: `table-${tableNumber}-${Date.now()}`,
+              });
 
-            for (const item of cart) {
-              for (let index = 0; index < item.quantity; index += 1) {
-                await consumeForRecipe(item.recipe, item.options);
-              }
+              setCart([]);
+              setTimeout(() => {
+                showCustomDialog('Pedido enviado', 'Tus tragos han sido agregados a la mesa.', [
+                  { text: 'Aceptar', variant: 'primary' }
+                ]);
+              }, 500);
+            } finally {
+              submittingRef.current = false;
             }
-
-            setCart([]);
-            setTimeout(() => {
-              showCustomDialog('Pedido enviado', 'Tus tragos han sido agregados a la mesa.', [
-                { text: 'Aceptar', variant: 'primary' }
-              ]);
-            }, 500);
           },
         },
       ]
@@ -193,6 +245,18 @@ export default function TableRoute() {
   const handleResetAccess = () => {
     router.replace('/' as any);
   };
+
+  if (isNaN(tableNumber) || tableNumber <= 0) {
+    return (
+      <SafeAreaView style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center', padding: 24 }]}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: Colors.text, marginBottom: 8 }}>Mesa no válida</Text>
+        <Text style={{ fontSize: 14, color: Colors.textMuted, textAlign: 'center', marginBottom: 20 }}>
+          El número de mesa especificado no existe o es inválido. Por favor escanea un código QR válido.
+        </Text>
+        <Button title="Volver al inicio" variant="primary" onPress={() => router.replace('/' as any)} />
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>

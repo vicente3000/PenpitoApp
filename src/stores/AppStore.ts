@@ -1,11 +1,14 @@
 import { create } from 'zustand';
+import { ConnectionSnapshot } from '../adapters/ICommunicationAdapter';
 import { MachineState } from '../models';
 
 interface AppState {
   machineState: MachineState;
   isConnected: boolean;
+  connectionSnapshot: ConnectionSnapshot;
   setMachineState: (state: MachineState) => void;
   setIsConnected: (connected: boolean) => void;
+  setConnectionSnapshot: (snapshot: ConnectionSnapshot) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -20,6 +23,17 @@ export const useAppStore = create<AppState>((set) => ({
     isDrinkReady: false,
   },
   isConnected: false,
+  connectionSnapshot: {
+    broker: 'disconnected',
+    deviceOnline: false,
+    lastDeviceMessageAt: null,
+    error: null,
+  },
   setMachineState: (state) => set({ machineState: state }),
   setIsConnected: (connected) => set({ isConnected: connected }),
+  setConnectionSnapshot: (snapshot) => set({
+    connectionSnapshot: snapshot,
+    isConnected: snapshot.broker === 'connected' && snapshot.deviceOnline,
+  }),
 }));
+

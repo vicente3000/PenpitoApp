@@ -1,4 +1,4 @@
-import { BottleInventory, DrinkPreparationOptions, PiscolaIntensity, Recipe } from '../models';
+import { BottleInventory, DrinkOrder, DrinkPreparationOptions, PiscolaIntensity, Recipe } from '../models';
 
 export const ML_PER_OUNCE = 30.0;
 
@@ -19,21 +19,21 @@ export const piscolaProfiles: Record<
   { alcoholOz: number; mixerOz: number; defaultIceCount: number; label: string }
 > = {
   suave: {
-    alcoholOz: 2.0,
-    mixerOz: 7.0, // Reducido de 8.5 (255ml) a 7.0 (210ml)
-    defaultIceCount: 3, // Cambiado a 3
+    alcoholOz: 1.5,
+    mixerOz: 5.5,
+    defaultIceCount: 4,
     label: 'Suave',
   },
   normal: {
-    alcoholOz: 3.0,
-    mixerOz: 6.0, // Reducido de 7.5 (225ml) a 6.0 (180ml)
-    defaultIceCount: 3, // Cambiado a 3
+    alcoholOz: 2.0,
+    mixerOz: 6.0,
+    defaultIceCount: 4,
     label: 'Normal',
   },
   fuerte: {
-    alcoholOz: 4.5,
-    mixerOz: 5.0, // Reducido de 6.5 (195ml) a 5.0 (150ml)
-    defaultIceCount: 3, // Cambiado a 3
+    alcoholOz: 3.0,
+    mixerOz: 5.0,
+    defaultIceCount: 4,
     label: 'Fuerte',
   },
 };
@@ -51,14 +51,23 @@ export function formatOz(value: number) {
 }
 
 export function formatMl(value: number) {
+  if (value === undefined || value === null || !Number.isFinite(value) || isNaN(value)) {
+    return '0 ml';
+  }
   return `${Math.round(value).toLocaleString('es-CL')} ml`;
 }
 
 export function formatCurrency(amount: number) {
+  if (amount === undefined || amount === null || !Number.isFinite(amount) || isNaN(amount)) {
+    return '$0';
+  }
   return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(amount);
 }
 
 export function getDefaultIceCount(recipeId: string, intensity: PiscolaIntensity = 'normal') {
+  if (recipeId === 'piscola') {
+    return piscolaProfiles[intensity].defaultIceCount;
+  }
   return 3;
 }
 
@@ -98,7 +107,7 @@ export function getInventoryShortage(
       const bottle = inventory.find((entry) => entry.ingredient_name === item.ingredient_name);
       const remaining = bottle?.remaining_ml ?? 0;
 
-      if (remaining >= item.amount_ml) {
+      if (remaining + 0.5 >= item.amount_ml) {
         return null;
       }
 
@@ -179,4 +188,12 @@ export function buildCartItemLabel(recipe: Recipe, options: DrinkPreparationOpti
 
   const intensity = options.piscolaIntensity ?? 'normal';
   return `${recipe.name} ${piscolaProfiles[intensity].label}`;
+}
+
+export function getOrderDisplayName(order: DrinkOrder) {
+  if (order.recipe_id !== 'piscola' || !order.piscola_intensity) {
+    return order.recipe_name;
+  }
+
+  return `${order.recipe_name} ${piscolaProfiles[order.piscola_intensity].label}`;
 }

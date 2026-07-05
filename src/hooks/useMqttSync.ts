@@ -63,16 +63,27 @@ export function useMqttSync(tableNumber: number | null) {
       }
     );
 
+    const sendSyncRequest = () => {
+      deviceService.publish(
+        `penpito/table/${tableNumber}/request`,
+        JSON.stringify({ type: 'SYNC_REQUEST' })
+      );
+    };
+
+    const unsubConnection = deviceService.onConnectionChange((snapshot) => {
+      if (snapshot.broker === 'connected') {
+        sendSyncRequest();
+      }
+    });
+
     // Solicitamos sincronizacion inicial
-    deviceService.publish(
-      `penpito/table/${tableNumber}/request`,
-      JSON.stringify({ type: 'SYNC_REQUEST' })
-    );
+    sendSyncRequest();
 
     return () => {
       unsubSession?.();
       unsubOrders?.();
       unsubSyncRequest?.();
+      unsubConnection?.();
     };
   }, [tableNumber]);
 }

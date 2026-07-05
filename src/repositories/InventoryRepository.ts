@@ -84,6 +84,16 @@ export class InventoryRepository {
     for (const usage of usages) {
       const bottle = bottles.find((entry) => entry.ingredient_name === usage.ingredient_name);
       if (!bottle) {
+        throw new Error(`Ingrediente no encontrado en inventario: ${usage.ingredient_name}`);
+      }
+      if (bottle.remaining_ml + 0.5 < usage.amount_ml) {
+        throw new Error(`Stock insuficiente de ${usage.ingredient_name}`);
+      }
+    }
+
+    for (const usage of usages) {
+      const bottle = bottles.find((entry) => entry.ingredient_name === usage.ingredient_name);
+      if (!bottle) {
         continue;
       }
 
