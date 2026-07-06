@@ -175,4 +175,22 @@ describe('OrderStoreV2 (con fake adapter)', () => {
     adapter.emitConnection({ broker: 'connected', deviceOnline: true, lastDeviceMessageAt: Date.now(), error: null });
     expect(store.getState().isConnected).toBe(true);
   });
+
+  it('__dispose desuscribe todos los listeners del adapter', () => {
+    const adapter = new FakeAdapter();
+    const store = createOrderStoreV2(adapter as unknown as PenpitoAppMqttAdapter) as any;
+    // Tras crear, los sets de listeners del FakeAdapter tienen 1 elemento cada uno.
+    expect((adapter as any).queueListeners.size).toBe(1);
+    expect((adapter as any).eventListeners.size).toBe(1);
+    expect((adapter as any).hwListeners.size).toBe(1);
+    expect((adapter as any).connectionListeners.size).toBe(1);
+    // Dispose.
+    store.__dispose();
+    expect((adapter as any).queueListeners.size).toBe(0);
+    expect((adapter as any).eventListeners.size).toBe(0);
+    expect((adapter as any).hwListeners.size).toBe(0);
+    expect((adapter as any).connectionListeners.size).toBe(0);
+    // Llamar dos veces es no-op.
+    expect(() => store.__dispose()).not.toThrow();
+  });
 });

@@ -75,17 +75,29 @@ export class ControllerMqttClient extends EventEmitter {
       };
       const client = mqtt.connect(this.config.url, opts);
       this.client = client;
-      client.once('connect', () => {
+      let resolved = false;
+
+      client.on('connect', () => {
         this.connected = true;
         this.subscribeAll();
-        resolve();
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
       });
-      client.once('error', (err) => {
-        if (!this.connected) reject(err);
+
+      client.on('error', (err) => {
+        console.error(`[ControllerMqtt] client error: ${err.message}`);
+        if (!resolved) {
+          resolved = true;
+          reject(err);
+        }
       });
+
       client.on('message', (topic, payload, packet) => {
         this.handleMessage(topic, payload, packet.retain === true);
       });
+
       client.on('close', () => {
         this.connected = false;
       });

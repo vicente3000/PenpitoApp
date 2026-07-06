@@ -55,7 +55,7 @@ const CONNECT_TIMEOUT_MS = 8_000;
 const PUBLISH_QUEUE_LIMIT = 200;
 const DEVICE_STALE_AFTER_MS = 30_000;
 const STALE_CHECK_INTERVAL_MS = 3_000;
-const DEFAULT_MQTT_WS_URL = 'ws://192.168.1.100:9001';
+const DEFAULT_MQTT_WS_URL = 'ws://172.20.10.7:9001';
 
 function decorrelatedJitter(attempt: number): number {
   const cap = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, attempt));
@@ -222,6 +222,16 @@ class MinimalMqttWebSocketClient {
     const packetId = this.nextPacketId();
     const body = [...toPacketIdBytes(packetId), ...encodeString(topic), qos];
     this.sendPacket(makePacket(0x82, body));
+  }
+
+  unsubscribe(topic: string) {
+    const packetId = this.nextPacketId();
+    const body = [...toPacketIdBytes(packetId), ...encodeString(topic)];
+    try {
+      this.sendPacket(makePacket(0xa2, body));
+    } catch (err) {
+      console.warn(`[MinimalMqtt] unsubscribe ${topic} failed`, err);
+    }
   }
 
   publish(topic: string, payload: string, qos: 0 | 1 = 0, retain = false) {
@@ -653,13 +663,24 @@ export class PenpitoAppMqttAdapter implements IAppV2Adapter {
       }
     }
     this.customSubscribers.get(topic)!.add(callback);
+    let unsubscribed = false;
     return () => {
+      if (unsubscribed) return;
+      unsubscribed = true;
       const subs = this.customSubscribers.get(topic);
       if (subs) {
         subs.delete(callback);
         if (subs.size === 0) {
           this.customSubscribers.delete(topic);
           this.pendingSubscribes.delete(topic);
+          // Liberar la suscripción MQTT para no acumular filtros en el broker.
+          if (this.isConnected && this.client) {
+            try {
+              this.client.unsubscribe(topic);
+            } catch (err) {
+              console.warn(`[AppMqtt] unsubscribe ${topic} failed`, err);
+            }
+          }
         }
       }
     };

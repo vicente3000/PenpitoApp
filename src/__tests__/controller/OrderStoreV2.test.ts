@@ -50,4 +50,14 @@ describe('OrderStoreV2 (proyección)', () => {
     expect(mapStateToStatus('served')).toBe('served');
     expect(mapStateToStatus('failed')).toBe('failed');
   });
+
+  it('mantiene la misma referencia del array para el mismo QueueSnapshot (caching en WeakMap)', () => {
+    const snap = makeSnap([
+      { orderId: 'a', commandId: 'ca', recipeId: 'piscola', state: 'queued', requestedAt: 1000 },
+    ]);
+    const map = new Map([[1, snap]]);
+    const orders1 = projectOrdersForTable(map, 1);
+    const orders2 = projectOrdersForTable(map, 1);
+    expect(orders1).toBe(orders2); // Referencia idéntica
+  });
 });

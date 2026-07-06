@@ -16,6 +16,7 @@
 
 import { create } from 'zustand';
 
+import { ConnectionSnapshot } from '../adapters/ICommunicationAdapter';
 import { DrinkOrder, DrinkOrderStatus, PreparationStepId } from '../models';
 import { PenpitoAppMqttAdapter } from '../adapters/PenpitoAppMqttAdapter';
 import {
@@ -38,6 +39,7 @@ export interface OrderStoreV2State {
   /** Inicializado: el primer snapshot llegó o la reconexión terminó. */
   hasInitialSnapshot: Map<number, boolean>;
   isConnected: boolean;
+  connectionSnapshot: ConnectionSnapshot | null;
   error: string | null;
   /** Acciones de UI. */
   submitOrder: (input: {
@@ -71,7 +73,12 @@ function mapStateToStatus(state: OrderState): DrinkOrderStatus {
   }
 }
 
+const projectionCache = new WeakMap<QueueSnapshot, DrinkOrder[]>();
+
 function snapshotToDrinkOrders(snap: QueueSnapshot): DrinkOrder[] {
+  const cached = projectionCache.get(snap);
+  if (cached) return cached;
+
   const result: DrinkOrder[] = [];
   for (const entry of snap.orders) {
     result.push({
@@ -95,6 +102,7 @@ function snapshotToDrinkOrders(snap: QueueSnapshot): DrinkOrder[] {
       group_id: entry.groupId,
     });
   }
+  projectionCache.set(snap, result);
   return result;
 }
 
@@ -106,33 +114,55 @@ function generateCommandId(): string {
   return `cmd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function createOrderStoreV2(adapter: PenpitoAppMqttAdapter) {
-  return create<OrderStoreV2State>((set, get) => {
-    const unsubQueue = adapter.onQueueSnapshot((snapshot) => {
-      set((state) => {
-        const next = new Map(state.snapshots);
-        next.set(snapshot.tableId, snapshot);
-        const ready = new Map(state.hasInitialSnapshot);
-        ready.set(snapshot.tableId, true);
-        return { snapshots: next, hasInitialSnapshot: ready };
-      });
-    });
+export interface OrderStoreV2Disposable {
+  dispose(): void;
+}
 
-    const unsubEvents = adapter.onOrderEvent((event) => {
-      set((state) => {
-        const next = new Map(state.recentEvents);
-        next.set(event.orderId, event);
-        return { recentEvents: next };
-      });
-    });
+/**
+ * Crea un store v2 con cleanup explícito.
+ * Los listeners del adapter se desregistran en `dispose()` para evitar
+ * memory leaks tras logout, hot reload, o reset de singleton en tests.
+ */
+export function createOrderStoreV2(adapter: PenpitoAppMqttAdapter): OrderStoreV2 {
+  const unsubscribers: Array<() => void> = [];
 
-    const unsubHardware = adapter.onHardwareAuthoritativeState((hardware) => {
-      set({ hardware });
-    });
+  const store = create<OrderStoreV2State>((set, get) => {
+    unsubscribers.push(
+      adapter.onQueueSnapshot((snapshot) => {
+        set((state) => {
+          const next = new Map(state.snapshots);
+          next.set(snapshot.tableId, snapshot);
+          const ready = new Map(state.hasInitialSnapshot);
+          ready.set(snapshot.tableId, true);
+          return { snapshots: next, hasInitialSnapshot: ready };
+        });
+      })
+    );
 
-    const unsubConnection = adapter.onConnectionChange((snap) => {
-      set({ isConnected: snap.broker === 'connected' && snap.deviceOnline });
-    });
+    unsubscribers.push(
+      adapter.onOrderEvent((event) => {
+        set((state) => {
+          const next = new Map(state.recentEvents);
+          next.set(event.orderId, event);
+          return { recentEvents: next };
+        });
+      })
+    );
+
+    unsubscribers.push(
+      adapter.onHardwareAuthoritativeState((hardware) => {
+        set({ hardware });
+      })
+    );
+
+    unsubscribers.push(
+      adapter.onConnectionChange((snap) => {
+        set({
+          connectionSnapshot: snap,
+          isConnected: snap.broker === 'connected' && snap.deviceOnline,
+        });
+      })
+    );
 
     return {
       snapshots: new Map(),
@@ -140,6 +170,7 @@ export function createOrderStoreV2(adapter: PenpitoAppMqttAdapter) {
       recentEvents: new Map(),
       hasInitialSnapshot: new Map(),
       isConnected: false,
+      connectionSnapshot: null,
       error: null,
       async submitOrder(input) {
         const orderId = generateId();
@@ -180,17 +211,23 @@ export function createOrderStoreV2(adapter: PenpitoAppMqttAdapter) {
       requestSnapshot(tableId) {
         adapter.requestQueueSnapshot(tableId);
       },
-      _dispose() {
-        unsubQueue();
-        unsubEvents();
-        unsubHardware();
-        unsubConnection();
-      },
     };
   });
+
+  (store as any).__dispose = () => {
+    while (unsubscribers.length) {
+      const u = unsubscribers.pop();
+      try { u?.(); } catch { /* ignore */ }
+    }
+  };
+  return store as unknown as OrderStoreV2;
 }
 
-export type OrderStoreV2 = ReturnType<typeof createOrderStoreV2>;
+import type { StoreApi, UseBoundStore } from 'zustand';
+
+export type OrderStoreV2 = UseBoundStore<StoreApi<OrderStoreV2State>> & {
+  __dispose?: () => void;
+};
 
 export function projectOrdersForTable(snapshots: Map<number, QueueSnapshot>, tableId: number): DrinkOrder[] {
   const snap = snapshots.get(tableId);

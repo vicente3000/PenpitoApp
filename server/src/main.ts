@@ -39,7 +39,7 @@ import {
 import { ControllerState, QueueEntry } from './ControllerState';
 
 function loadConfig(): { mqttUrl: string; dbPath: string; clientId: string } {
-  const mqttUrl = process.env.MQTT_URL || 'mqtt://localhost:1883';
+  const mqttUrl = process.env.MQTT_URL || 'mqtt://172.20.10.7:1883';
   const dbPath = process.env.CONTROLLER_DB || path.resolve(process.cwd(), 'data/controller.db');
   const clientId =
     process.env.CONTROLLER_ID || `penpito-controller-${process.pid}-${Date.now().toString(36)}`;
@@ -114,28 +114,24 @@ async function main(): Promise<void> {
     }
   });
   mqttClient.on('hardware_ack', (ack: CommandAck) => {
+    // Primero: si es un admin command conocido, consumirlo y republicar por admin/result.
+    const adminAck = core.consumeAdminAck(ack);
+    if (adminAck) {
+      mqttClient.publishAdminResult(adminAck);
+      return;
+    }
+    // Si el ACK tiene activeOrderId o el commandId está en un pedido,
+    // procesarlo como ACK de pedido.
     const result = core.handleCommandAck(ack);
     publishEvents(mqttClient, core, result.events);
     if (result.nextClaim.claimed) {
       mqttClient.publishHardwareCommand(result.nextClaim.command!);
     }
     publishAllSnapshots(mqttClient, core);
-    // Si el ACK corresponde a un comando sin orderId (admin), republicarlo por
-    // el canal admin/result para que la app lo reciba. El handleCommandAck
-    // ignora ACKs cuyo commandId no es un orderId activo, pero el hardware
-    // también puede confirmar ACKs administrativos que no tocan la cola.
-    if (!ack.activeOrderId) {
-      mqttClient.publishAdminResult(ack);
-    }
   });
   mqttClient.on('admin_command', (command: CommandEnvelope) => {
     const r = core.submitAdminCommand(command);
-    if (r.accepted) {
-      // El hardware responderá con un CommandAck por el mismo commandId.
-      // Reenviamos ese ACK al cliente por el canal admin/result cuando llegue.
-      // (Ya está manejado en hardware_ack más abajo: el ACk correlacionado
-      // se republica por admin/result.)
-    } else {
+    if (!r.accepted) {
       mqttClient.publishAdminResult({
         protocolVersion: 2,
         commandId: command.commandId,
@@ -144,6 +140,9 @@ async function main(): Promise<void> {
         timestamp: Date.now(),
       });
     }
+    // Si accepted=true y reason='duplicate_admin': ya está en vuelo, no reenviar.
+    // Si accepted=true sin reason: el hardware responderá con un ACK; consumeAdminAck
+    // lo republicará por admin/result.
   });
   mqttClient.on('hardware_state', (state: HardwareState) => {
     const result = core.updateHardwareState(state);
@@ -163,6 +162,9 @@ async function main(): Promise<void> {
   });
   mqttClient.on('hardware_presence', (online: boolean) => {
     if (!online) {
+      // Drenar admin commands en vuelo: el hardware no responderá.
+      const drained = core.drainAdminCommandsOnHardwareLoss();
+      for (const ack of drained) mqttClient.publishAdminResult(ack);
       // El hardware se fue. Reconcilia: limpia activeOrder, libera lock.
       const synthState: HardwareState = {
         protocolVersion: 2,

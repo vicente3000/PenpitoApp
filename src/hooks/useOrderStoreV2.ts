@@ -13,7 +13,7 @@
  * La UI no llama a commandQueueService ni a deviceService.sendCommand.
  */
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { DrinkOrder, DrinkOrderStatus } from '../models';
 import {
   createOrderStoreV2,
@@ -25,8 +25,7 @@ import {
   ConnectionSnapshot,
 } from '../adapters/ICommunicationAdapter';
 import { deviceService } from '../services/DeviceService';
-import { HardwareState } from '../protocol/types';
-import { OrderOptions } from '../protocol/types';
+import { HardwareState, OrderOptions, QueueSnapshot } from '../protocol/types';
 
 let _store: OrderStoreV2 | null = null;
 
@@ -36,24 +35,41 @@ export function getOrCreateOrderStoreV2(): OrderStoreV2 {
   return _store;
 }
 
+/**
+ * Resetea el singleton del store. Usar en logout, reset de app, o entre tests.
+ * Libera los listeners del adapter para no dejar zombies tras hot reload.
+ */
+export function resetOrderStoreV2(): void {
+  if (_store && typeof ( _store as any).__dispose === 'function') {
+    (_store as any).__dispose();
+  }
+  _store = null;
+}
+
 function useStoreSelector<T>(selector: (s: OrderStoreV2State) => T, equalityFn?: (a: T, b: T) => boolean): T {
   const store = getOrCreateOrderStoreV2();
   const subscribe = useMemo(
     () => (listener: () => void) => store.subscribe(listener),
     [store]
   );
-  return useSyncExternalStore(
-    subscribe,
-    () => selector(store.getState()),
-    () => selector(store.getState())
+  // useSyncExternalStore: si no pasamos equalityFn, el default es === (referencia).
+  // Para snapshots (Map) y recentEvents (Map) y hardware (objeto nuevo por set),
+  // el cambio de referencia en cada `set` causa re-render aunque el contenido sea idéntico.
+  // Usamos un cache local con shallow compare cuando no se provee equalityFn.
+  const ref = useRef<{ value: T; selected: ReturnType<typeof selector> } | null>(null);
+  const getSnapshot = useMemo(
+    () => () => {
+      const next = selector(store.getState());
+      const prev = ref.current;
+      if (prev && (equalityFn ? equalityFn(prev.value, next) : prev.value === next)) {
+        return prev.value;
+      }
+      ref.current = { value: next, selected: next };
+      return next;
+    },
+    [store, selector, equalityFn]
   );
-}
-
-function shallowEqualArray<T>(a: T[], b: T[]): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 export function useOrderStoreV2(): OrderStoreV2 {
@@ -66,13 +82,37 @@ export function useTableOrders(tableId: number): DrinkOrder[] {
     () => (listener: () => void) => store.subscribe(listener),
     [store]
   );
-  const orders = useSyncExternalStore(
-    subscribe,
-    () => projectOrdersForTable(store.getState().snapshots, tableId),
-    () => projectOrdersForTable(store.getState().snapshots, tableId)
+  // Cache estable: el array de DrinkOrder[] cambia de referencia en cada snapshot,
+  // pero solo re-renderizamos si el contenido realmente cambió.
+  const ref = useRef<{ orders: DrinkOrder[]; snap: QueueSnapshot | undefined } | null>(null);
+  const getSnapshot = useMemo(
+    () => () => {
+      const snap = store.getState().snapshots.get(tableId);
+      const prev = ref.current;
+      if (prev && prev.snap === snap) return prev.orders;
+      const next = projectOrdersForTable(store.getState().snapshots, tableId);
+      // Comparación shallow: si el número y orden de orders no cambió, reusar.
+      if (prev && prev.orders.length === next.length) {
+        let same = true;
+        for (let i = 0; i < next.length; i++) {
+          if (prev.orders[i] !== next[i]) { same = false; break; }
+        }
+        if (same) {
+          ref.current = { orders: prev.orders, snap };
+          return prev.orders;
+        }
+      }
+      ref.current = { orders: next, snap };
+      return next;
+    },
+    [store, tableId]
   );
+  const orders = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  // Snapshot request SOLO al montar o al cambiar tableId, no en cada render.
   useEffect(() => {
-    store.getState().requestSnapshot(tableId);
+    if (Number.isFinite(tableId) && tableId > 0) {
+      store.getState().requestSnapshot(tableId);
+    }
   }, [store, tableId]);
   return orders;
 }
@@ -83,25 +123,40 @@ export function useAllTables(): Map<number, DrinkOrder[]> {
     () => (listener: () => void) => store.subscribe(listener),
     [store]
   );
-  const result = useSyncExternalStore(
-    subscribe,
-    () => {
-      const out: Array<[number, DrinkOrder[]]> = [];
+  const ref = useRef<{
+    snapshots: Map<number, QueueSnapshot>;
+    map: Map<number, DrinkOrder[]>;
+  } | null>(null);
+  const getSnapshot = useMemo(
+    () => () => {
       const state = store.getState();
-      for (const [tableId, _snap] of state.snapshots) {
-        out.push([tableId, projectOrdersForTable(state.snapshots, tableId)]);
+      const prev = ref.current;
+      if (prev && prev.snapshots === state.snapshots) {
+        return prev.map;
       }
-      return out;
+      const next = new Map<number, DrinkOrder[]>();
+      for (const [tableId, snap] of state.snapshots) {
+        const projected = projectOrdersForTable(state.snapshots, tableId);
+        if (projected.length > 0) next.set(tableId, projected);
+      }
+      // Shallow compare con cache: si mismo tamaño y mismas referencias, reusar.
+      if (prev && prev.map.size === next.size) {
+        let same = true;
+        for (const [k, v] of next) {
+          const pv = prev.map.get(k);
+          if (!pv || pv !== v) { same = false; break; }
+        }
+        if (same) {
+          ref.current = { snapshots: state.snapshots, map: prev.map };
+          return prev.map;
+        }
+      }
+      ref.current = { snapshots: state.snapshots, map: next };
+      return next;
     },
-    () => [] as Array<[number, DrinkOrder[]]>
+    [store]
   );
-  return useMemo(() => {
-    const map = new Map<number, DrinkOrder[]>();
-    for (const [tableId, orders] of result) {
-      if (orders.length > 0) map.set(tableId, orders);
-    }
-    return map;
-  }, [result]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 export function useControllerHardware(): HardwareState | null {
@@ -117,25 +172,38 @@ export function useControllerConnection(): {
     () => (listener: () => void) => store.subscribe(listener),
     [store]
   );
+  // isConnected: valor reactivo, suscrito al store, no leído de getState (stale).
+  const isConnected = useSyncExternalStore(
+    subscribe,
+    () => store.getState().isConnected,
+    () => false
+  );
+  const getSnapshot = useMemo(
+    () => () => {
+      const s = store.getState();
+      if (s.connectionSnapshot) {
+        return s.connectionSnapshot;
+      }
+      return {
+        broker: 'disconnected',
+        deviceOnline: false,
+        lastDeviceMessageAt: null,
+        error: 'no_connection_snapshot',
+      };
+    },
+    [store]
+  );
   const snapshot = useSyncExternalStore(
     subscribe,
-    () => {
-      const s = store.getState();
-      return {
-        broker: s.isConnected ? 'connected' : 'disconnected',
-        deviceOnline: !!s.hardware?.isOn,
-        lastDeviceMessageAt: null,
-        error: null,
-      } as ConnectionSnapshot;
-    },
+    getSnapshot,
     () => ({
       broker: 'disconnected',
       deviceOnline: false,
       lastDeviceMessageAt: null,
-      error: null,
+      error: 'no_connection_snapshot',
     } as ConnectionSnapshot)
   );
-  return { isConnected: store.getState().isConnected, snapshot };
+  return { isConnected, snapshot };
 }
 
 export function useRecentOrderEvent(orderId: string | null) {
@@ -207,32 +275,68 @@ export function useOrderCounts(orders: DrinkOrder[]): {
   }, [orders]);
 }
 
-export function useRequestAllSnapshotsOnConnect(tableIds: number[]): void {
+/**
+ * Dispara `requestSnapshot` cuando el store pasa a `isConnected=true`.
+ * Idempotente: dedupea por transición, no por cada `set` del store.
+ * Sin esto, cada `set` durante una reconexión dispara 1-10 publishes a MQTT.
+ */
+export function useRequestAllSnapshotsOnConnect(tableIds: number[], debounceMs = 250): void {
   const store = getOrCreateOrderStoreV2();
+  const ids = useMemo(() => [...tableIds].sort((a, b) => a - b), [tableIds]);
   useEffect(() => {
-    const unsub = store.subscribe(() => {
+    let lastConnected = store.getState().isConnected;
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      pending = null;
       if (store.getState().isConnected) {
-        for (const t of tableIds) store.getState().requestSnapshot(t);
+        for (const t of ids) store.getState().requestSnapshot(t);
       }
+    };
+    const unsub = store.subscribe(() => {
+      const now = store.getState().isConnected;
+      if (now && !lastConnected) {
+        if (pending) clearTimeout(pending);
+        pending = setTimeout(flush, debounceMs);
+      }
+      lastConnected = now;
     });
-    if (store.getState().isConnected) {
-      for (const t of tableIds) store.getState().requestSnapshot(t);
-    }
-    return () => unsub();
-  }, [store, tableIds.join(',')]);
+    if (lastConnected) flush();
+    return () => {
+      unsub();
+      if (pending) {
+        clearTimeout(pending);
+        pending = null;
+      }
+    };
+  }, [store, ids, debounceMs]);
 }
 
-export function useForceSnapshotOnConnect(): void {
+export function useForceSnapshotOnConnect(debounceMs = 250): void {
   const store = getOrCreateOrderStoreV2();
   useEffect(() => {
-    const unsub = store.subscribe(() => {
+    let lastConnected = store.getState().isConnected;
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      pending = null;
       if (store.getState().isConnected) {
         for (let t = 1; t <= 10; t++) store.getState().requestSnapshot(t);
       }
+    };
+    const unsub = store.subscribe(() => {
+      const now = store.getState().isConnected;
+      if (now && !lastConnected) {
+        if (pending) clearTimeout(pending);
+        pending = setTimeout(flush, debounceMs);
+      }
+      lastConnected = now;
     });
-    if (store.getState().isConnected) {
-      for (let t = 1; t <= 10; t++) store.getState().requestSnapshot(t);
-    }
-    return () => unsub();
-  }, [store]);
+    if (lastConnected) flush();
+    return () => {
+      unsub();
+      if (pending) {
+        clearTimeout(pending);
+        pending = null;
+      }
+    };
+  }, [store, debounceMs]);
 }

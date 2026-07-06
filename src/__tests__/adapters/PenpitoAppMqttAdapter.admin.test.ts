@@ -12,10 +12,12 @@ import { makeCommandAck, PROTOCOL_VERSION } from '../../protocol/types';
 
 class MockClient {
   published: Array<{ topic: string; payload: string }> = [];
+  unsubscribed: string[] = [];
   publish(topic: string, payload: string, _qos?: number, _retain?: boolean) {
     this.published.push({ topic, payload });
   }
   subscribe() {}
+  unsubscribe(topic: string) { this.unsubscribed.push(topic); }
   disconnect() {}
 }
 
@@ -128,6 +130,41 @@ describe('PenpitoAppMqttAdapter.submitAdminCommand', () => {
     );
 
     await expect(promise).rejects.toThrow('admin_command_timeout');
+  });
+
+  it('subscribeCustom envía UNSUBSCRIBE al broker cuando se desuscribe el último listener', () => {
+    const adapter = makeConnectedAdapter();
+    const mock = (adapter as any).client as MockClient;
+    mock.subscribe = jest.fn();
+    (mock as any).unsubscribe = jest.fn();
+
+    // El adapter está conectado; el primer subscribe se hace en el momento.
+    // Forzar que el adapter considere isConnected=true.
+    (adapter as any).isConnected = true;
+    const unsub = adapter.subscribeCustom('penpito/v2/test/topic', () => {});
+    expect(mock.subscribe).toHaveBeenCalledWith('penpito/v2/test/topic', 1);
+
+    // Cleanup: debe llamar a unsubscribe del mock.
+    unsub();
+    expect((mock as any).unsubscribe).toHaveBeenCalledWith('penpito/v2/test/topic');
+  });
+
+  it('subscribeCustom idempotente: dos subs al mismo topic, un solo UNSUBSCRIBE tras cleanup completo', () => {
+    const adapter = makeConnectedAdapter();
+    const mock = (adapter as any).client as MockClient;
+    (mock as any).unsubscribe = jest.fn();
+    (mock as any).subscribe = jest.fn();
+
+    (adapter as any).isConnected = true;
+    const u1 = adapter.subscribeCustom('penpito/v2/topic-dup', () => {});
+    const u2 = adapter.subscribeCustom('penpito/v2/topic-dup', () => {});
+    // Solo se suscribe una vez al broker.
+    expect((mock as any).subscribe).toHaveBeenCalledTimes(1);
+
+    u1(); // todavía queda u2
+    expect((mock as any).unsubscribe).not.toHaveBeenCalled();
+    u2(); // ahora sí, último suscriptor
+    expect((mock as any).unsubscribe).toHaveBeenCalledWith('penpito/v2/topic-dup');
   });
 });
 

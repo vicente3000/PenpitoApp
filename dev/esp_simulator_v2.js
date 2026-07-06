@@ -33,7 +33,7 @@ function loadBrokerUrl() {
       if (match && match[1]) return match[1].trim();
     }
   } catch (_) {}
-  return process.env.EXPO_PUBLIC_MQTT_WS_URL || 'ws://localhost:9001';
+  return process.env.EXPO_PUBLIC_MQTT_WS_URL || 'ws://172.20.10.7:9001';
 }
 
 const BROKER_URL = loadBrokerUrl();
@@ -215,6 +215,9 @@ function getCachedRequest(id) {
   return entry;
 }
 
+// Escribe en cache SOLO después de publicar el ACK. Así, si el broker nos
+// entrega un retransmit antes de que el ACK original saliera, replay del ACK
+// se hace con el resultado ya en cache.
 function cacheRequest(id, accepted, reason = '') {
   if (!id) return;
   cachedRequests.set(id, { at: Date.now(), accepted, reason });
@@ -375,13 +378,12 @@ function handleCommand(topic, payloadStr) {
   const orderId = doc.orderId;
   const tableId = doc.tableId;
 
-  // Idempotencia para comandos que no son movimiento.
-  if (type !== 'PREPARE' && type !== 'TAKEN' && type !== 'POWER' && type !== 'EMERGENCY_STOP') {
-    const cached = getCachedRequest(commandId);
-    if (cached) {
-      sendAck(commandId, cached.accepted, { reason: cached.reason });
-      return;
-    }
+  // Idempotencia universal: si ya vimos este commandId, replay.
+  // Cubre retransmisiones TCP/WS y reintentos del controller.
+  const cached = getCachedRequest(commandId);
+  if (cached) {
+    sendAck(commandId, cached.accepted, { reason: cached.reason });
+    return;
   }
 
   if (type === 'EMERGENCY_STOP' || (type === 'POWER' && (doc.payload?.val === 'OFF' || doc.val === 'OFF'))) {
@@ -417,7 +419,24 @@ function handleCommand(topic, payloadStr) {
     return;
   }
   if (type === 'PREPARE') {
-    if (machineState.status !== 'idle' || machineState.isDrinkReady) {
+    // Guard 1: si el hardware ya tiene un pedido activo Y su orderId coincide,
+    // es un retransmit del mismo PREPARE. Re-confirmamos sin reiniciar.
+    if (
+      currentOrder &&
+      machineState.activeOrderId === orderId &&
+      machineState.activeCommandId === commandId
+    ) {
+      cacheRequest(commandId, true);
+      sendAck(commandId, true);
+      return;
+    }
+    // Guard 2: si el hardware está preparando OTRO pedido, no aceptamos.
+    if (currentOrder || machineState.isDrinkReady) {
+      cacheRequest(commandId, false, 'machine_busy');
+      sendAck(commandId, false, { reason: 'machine_busy', failureCode: 'machine_busy' });
+      return;
+    }
+    if (machineState.status !== 'idle') {
       cacheRequest(commandId, false, 'machine_busy');
       sendAck(commandId, false, { reason: 'machine_busy', failureCode: 'machine_busy' });
       return;
@@ -438,6 +457,10 @@ function handleCommand(topic, payloadStr) {
     machineState.activeOrderId = null;
     machineState.activeTableId = null;
     machineState.activeCommandId = null;
+    machineState.status = 'idle';
+    machineState.activeStepId = null;
+    currentOrder = null;
+    clearPrepTimer();
     publishState();
     cacheRequest(commandId, true);
     sendAck(commandId, true);

@@ -30,9 +30,11 @@ export default function WaiterRoute() {
     clearTableSession,
   } = useSessionStore();
 
-  // En la nueva arquitectura, "cobrar mesa" se hace limpiando las sesiones
-  // locales y avisando al controller. El controller no maneja sesiones
-  // (es responsabilidad de la app), así que lo manejamos aquí.
+  // En la nueva arquitectura, "cobrar mesa" cancela los pedidos pending.
+  // El controller no maneja sesiones (es responsabilidad de la app).
+  // Los pedidos activos (dispatching/accepted/preparing) NO se cancelan aquí:
+  // el operador debe esperar a que el trago salga y marcarlo como 'served'
+  // antes de cobrar. Los pedidos 'queued'/'failed' se cancelan siempre.
   const clearTableOrders = (tableNumber: number) => {
     const tableOrders = ordersByTable.get(tableNumber) ?? [];
     for (const order of tableOrders) {

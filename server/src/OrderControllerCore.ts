@@ -79,6 +79,13 @@ export class OrderControllerCore {
   private state: ControllerState;
   private readonly persistence: ControllerPersistence;
   private readonly bus: ControllerEventBus;
+  /**
+   * Set de commandIds de admin ya enrutados al hardware.
+   * Previene retransmisión: si el controller recibe el mismo admin command dos
+   * veces (mismo commandId) reenvía una sola vez.
+   * Memoria: bounded por TTL implícito (sólo comandos vivos en la demo).
+   */
+  private readonly adminCommandIds = new Set<string>();
 
   constructor(persistence: ControllerPersistence, bus: ControllerEventBus) {
     this.persistence = persistence;
@@ -230,7 +237,18 @@ export class OrderControllerCore {
     });
     this.emitEvent(order, event);
     this.publishQueueSnapshotForTable(order.envelope.tableId);
-    // Solicitar TAKEN al hardware solo si el siguiente no requiere reuso inmediato
+    // Liberar la bandeja del hardware para que pueda aceptar el siguiente PREPARE.
+    // TAKEN es idempotente en el hardware (cache por commandId).
+    const takenCommand: CommandEnvelope = {
+      protocolVersion: PROTOCOL_VERSION,
+      commandId: `taken-${order.envelope.commandId}`,
+      type: 'TAKEN',
+      orderId,
+      tableId: order.envelope.tableId,
+      issuedAt: Date.now(),
+      issuedBy: 'controller',
+    };
+    this.bus.publishHardwareCommand(takenCommand);
     const nextClaim = this.claimNextQueuedOrder();
     return { accepted: true, events: [event], nextClaim };
   }
@@ -254,8 +272,14 @@ export class OrderControllerCore {
     if (!input.type) {
       return { accepted: false, command: input, reason: 'missing_type' };
     }
-    // Reenviamos al hardware con issuedBy=controller. El commandId es el del
-    // cliente, lo que permite que el ACK del hardware correlacione correctamente.
+    // Idempotencia: si ya reenviamos este commandId, no lo reenviamos otra vez.
+    // El hardware también cachea por commandId, así que devolver el mismo ACK
+    // es seguro. La app maneja el timeout: si el ACK no llega en X ms, reintenta
+    // con un commandId NUEVO (no reutilizar).
+    if (this.adminCommandIds.has(input.commandId)) {
+      return { accepted: true, command: input, reason: 'duplicate_admin' };
+    }
+    this.adminCommandIds.add(input.commandId);
     const forward: CommandEnvelope = {
       ...input,
       issuedBy: 'controller',
@@ -263,6 +287,26 @@ export class OrderControllerCore {
     };
     this.bus.publishHardwareCommand(forward);
     return { accepted: true, command: forward };
+  }
+
+  /** Para diagnóstico: ¿cuántos admin commands en vuelo? */
+  getAdminCommandCount(): number {
+    return this.adminCommandIds.size;
+  }
+
+  /**
+   * Procesa un ACK del hardware que NO corresponde a un pedido (es un admin command).
+   * Devuelve el CommandAck a republicar por `controller/admin/result` y limpia
+   * el commandId del registro.
+   *
+   * Si el commandId no está en el registro, el ACK se ignora (retransmisión tardía).
+   */
+  consumeAdminAck(ack: CommandAck): CommandAck | null {
+    if (ack.protocolVersion !== PROTOCOL_VERSION) return null;
+    if (!ack.commandId) return null;
+    if (!this.adminCommandIds.has(ack.commandId)) return null;
+    this.adminCommandIds.delete(ack.commandId);
+    return ack;
   }
 
   /**
@@ -525,6 +569,27 @@ export class OrderControllerCore {
     this.publishQueueSnapshotForAll();
     const nextClaim = this.claimNextQueuedOrder();
     return { accepted: true, events, nextClaim };
+  }
+
+  /**
+   * Hardware se fue o se reinició. Limpia admin commands en vuelo (sus ACKs
+   * nunca llegarán). El caller (main.ts) debe publicar admin/result con
+   * accepted=false para cada uno.
+   */
+  drainAdminCommandsOnHardwareLoss(): CommandAck[] {
+    const drained: CommandAck[] = [];
+    for (const commandId of this.adminCommandIds) {
+      drained.push({
+        protocolVersion: PROTOCOL_VERSION,
+        commandId,
+        accepted: false,
+        reason: 'hardware_offline',
+        failureCode: 'machine_offline',
+        timestamp: Date.now(),
+      });
+    }
+    this.adminCommandIds.clear();
+    return drained;
   }
 
   /**

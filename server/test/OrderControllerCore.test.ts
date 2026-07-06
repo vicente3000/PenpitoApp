@@ -294,35 +294,41 @@ describe('OrderControllerCore', () => {
     expect(bus.hardwareCommands).toHaveLength(1);
     expect(bus.hardwareCommands[0].orderId).toBe('ord_soak_0');
 
+    // Tras cada servido, el controller publica TAKEN (1) + el siguiente PREPARE (1).
+    // El número total esperado de comandos: 1 inicial + 50*(TAKEN + siguiente PREPARE)
+    // = 1 + 99 = 100. El último PREPARE ya no genera TAKEN siguiente.
+    const prepareCmds = () => bus.hardwareCommands.filter((c) => c.type === 'PREPARE');
+    const takenCmds = () => bus.hardwareCommands.filter((c) => c.type === 'TAKEN');
+
     // Simular flujo normal: cada pedido se acepta, completa, se sirve, y se
-    // promueve el siguiente. Nunca debe haber más de 1 comando pendiente.
+    // promueve el siguiente. Nunca debe haber más de 1 PREPARE en vuelo.
     for (let i = 0; i < 50; i++) {
-      const cmd = bus.hardwareCommands[i];
-      expect(cmd.orderId).toBe(`ord_soak_${i}`);
+      const prepareCmd = prepareCmds()[i];
+      expect(prepareCmd.orderId).toBe(`ord_soak_${i}`);
       // ACK
-      core.handleCommandAck(ack(cmd.commandId, true));
+      core.handleCommandAck(ack(prepareCmd.commandId, true));
       // COMPLETED
       core.handleHardwareEvent(
         makeOrderEvent({
           type: 'PREPARATION_COMPLETED',
-          orderId: cmd.orderId!,
-          tableId: cmd.tableId!,
-          commandId: cmd.commandId,
+          orderId: prepareCmd.orderId!,
+          tableId: prepareCmd.tableId!,
+          commandId: prepareCmd.commandId,
           sequence: 1,
         })
       );
-      // SERVED
-      const result = core.serveOrder(cmd.orderId!);
+      // SERVED (en cada iteración se acumula 1 TAKEN).
+      const result = core.serveOrder(prepareCmd.orderId!);
       expect(result.accepted).toBe(true);
-      // Tras servido, debería haberse publicado un nuevo comando (siguiente en cola)
-      // o ninguno si la cola está vacía.
-      if (i < 49) {
-        expect(bus.hardwareCommands).toHaveLength(i + 2);
-      } else {
-        expect(bus.hardwareCommands).toHaveLength(50);
-      }
+      // Tras servido, esperamos (i+1) PREPARE y (i+1) TAKEN. El TAKEN del último
+      // también se publica (no hay siguiente en cola, pero el sim lo aceptará).
+      const expectedTotal = i < 49 ? (i + 1) * 2 + 1 : 50 * 2;
+      expect(bus.hardwareCommands).toHaveLength(expectedTotal);
     }
-    // Verificar que todos los pedidos terminaron en 'served' o 'failed' con orden FIFO.
+    // 50 PREPARE + 50 TAKEN.
+    expect(prepareCmds()).toHaveLength(50);
+    expect(takenCmds()).toHaveLength(50);
+    // Verificar que todos los pedidos terminaron en 'served' con orden FIFO.
     const allOrders = [...core.getState().orders.values()];
     for (const order of allOrders) {
       expect(order.state).toBe('served');
@@ -443,6 +449,93 @@ describe('OrderControllerCore', () => {
       expect(bus.hardwareCommands).toHaveLength(2);
       expect(bus.hardwareCommands[0].type).toBe('PREPARE');
       expect(bus.hardwareCommands[1].type).toBe('POWER');
+    });
+  });
+
+  describe('hardening v2: ACK, idempotencia, drain', () => {
+    it('admin command idempotente: el mismo commandId no se reenvía 2 veces', () => {
+      const cmd = {
+        protocolVersion: PROTOCOL_VERSION,
+        commandId: 'admin-idem-1',
+        type: 'POWER' as const,
+        issuedBy: 'mobile' as const,
+        issuedAt: Date.now(),
+        payload: { val: 'ON' },
+      };
+      core.submitAdminCommand(cmd);
+      core.submitAdminCommand(cmd);
+      core.submitAdminCommand(cmd);
+      expect(bus.hardwareCommands.filter((c) => c.commandId === 'admin-idem-1')).toHaveLength(1);
+    });
+
+    it('consumeAdminAck devuelve el ACK cuando el commandId es admin conocido', () => {
+      core.submitAdminCommand({
+        protocolVersion: PROTOCOL_VERSION,
+        commandId: 'admin-drain-1',
+        type: 'CLEAN',
+        issuedBy: 'mobile',
+        issuedAt: Date.now(),
+      });
+      const a1 = ack('admin-drain-1', true);
+      const consumed = core.consumeAdminAck(a1);
+      expect(consumed).not.toBeNull();
+      expect(consumed!.commandId).toBe('admin-drain-1');
+      // Segunda vez: ya consumido, devuelve null.
+      const a2 = ack('admin-drain-1', true);
+      expect(core.consumeAdminAck(a2)).toBeNull();
+    });
+
+    it('consumeAdminAck ignora commandIds desconocidos', () => {
+      const a = ack('unknown-cmd', true);
+      expect(core.consumeAdminAck(a)).toBeNull();
+    });
+
+    it('drainAdminCommandsOnHardwareLoss genera ACKs negativos para todos los admin en vuelo', () => {
+      core.submitAdminCommand({
+        protocolVersion: PROTOCOL_VERSION,
+        commandId: 'admin-A',
+        type: 'POWER',
+        issuedBy: 'mobile',
+        issuedAt: Date.now(),
+      });
+      core.submitAdminCommand({
+        protocolVersion: PROTOCOL_VERSION,
+        commandId: 'admin-B',
+        type: 'CLEAN',
+        issuedBy: 'mobile',
+        issuedAt: Date.now(),
+      });
+      const drained = core.drainAdminCommandsOnHardwareLoss();
+      expect(drained).toHaveLength(2);
+      const ids = drained.map((d) => d.commandId).sort();
+      expect(ids).toEqual(['admin-A', 'admin-B']);
+      for (const d of drained) {
+        expect(d.accepted).toBe(false);
+        expect(d.failureCode).toBe('machine_offline');
+      }
+      // El set interno queda vacío.
+      expect(core.getAdminCommandCount()).toBe(0);
+    });
+
+    it('serveOrder libera la bandeja con TAKEN command', () => {
+      core.submitOrder(envelope('ord_release', 1));
+      const prepare = bus.hardwareCommands[0];
+      core.handleCommandAck(ack(prepare.commandId, true));
+      core.handleHardwareEvent(makeOrderEvent({
+        type: 'PREPARATION_COMPLETED',
+        orderId: 'ord_release',
+        tableId: 1,
+        commandId: prepare.commandId,
+        sequence: 1,
+      }));
+      const sizeBefore = bus.hardwareCommands.length;
+      const r = core.serveOrder('ord_release');
+      expect(r.accepted).toBe(true);
+      // Se publicó un TAKEN command.
+      const taken = bus.hardwareCommands.find((c) => c.type === 'TAKEN');
+      expect(taken).toBeDefined();
+      expect(taken!.orderId).toBe('ord_release');
+      expect(bus.hardwareCommands.length).toBe(sizeBefore + 1);
     });
   });
 });
