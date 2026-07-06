@@ -171,6 +171,7 @@ export class OrderControllerCore {
     };
     this.state.orders.set(envelope.orderId, order);
     this.state.queue.set(queueKey(fifoKey, envelope.orderId), entry);
+    this.persistence.saveQueueEntry(entry);
     this.persistence.saveOrder(order, entry);
     const event = makeOrderEvent({
       type: 'ORDER_ACCEPTED',
@@ -406,7 +407,28 @@ export class OrderControllerCore {
       this.publishQueueSnapshotForTable(order.envelope.tableId);
       return { accepted: true, events: [event], nextClaim: { claimed: null } };
     }
-    // ACK negativo
+    // ACK negativo por carrera de liberacion: el hardware aun esta ocupado.
+    // No es un fallo del pedido; lo devolvemos a la cola con su FIFO original.
+    if (ack.failureCode === 'machine_busy' || ack.reason === 'machine_busy') {
+      const entry = this.findQueueEntry(order.envelope.orderId);
+      order.state = 'queued';
+      order.failureCode = undefined;
+      order.reason = undefined;
+      order.retryCount += 1;
+      order.lastEventAt = Date.now();
+      order.sequence = nextSequence(this.state, order.envelope.orderId);
+      order.dispatchedAt = undefined;
+      if (entry) {
+        entry.state = 'queued';
+        this.persistence.saveQueueEntry(entry);
+      }
+      this.clearClaimIfMatches(order.envelope.orderId);
+      this.persistence.saveOrder(order, entry);
+      this.publishQueueSnapshotForTable(order.envelope.tableId);
+      return { accepted: true, events: [], nextClaim: { claimed: null } };
+    }
+
+    // ACK negativo definitivo
     order.state = 'failed';
     order.failureCode = ack.failureCode ?? 'machine_rejected';
     order.reason = ack.reason ?? 'machine_rejected';
@@ -527,12 +549,43 @@ export class OrderControllerCore {
       stateSequence: snapshot.stateSequence,
       isDrinkReady: snapshot.isDrinkReady,
       activeStepId: snapshot.activeStepId,
+      completedStepIds: snapshot.completedStepIds,
+      skippedStepIds: snapshot.skippedStepIds,
+      errorMessage: snapshot.errorMessage,
+      startedAt: snapshot.startedAt,
       lastSeenAt: Date.now(),
       uptimeMs: snapshot.uptimeMs,
     };
     this.persistence.saveHardware(this.state.hardware);
     this.bus.publishHardwareAuthoritativeState(snapshot);
     const events: OrderEvent[] = [];
+    if (snapshot.status === 'error' && snapshot.activeOrderId) {
+      const order = this.state.orders.get(snapshot.activeOrderId);
+      if (order && order.state !== 'served' && order.state !== 'failed') {
+        order.state = 'failed';
+        order.failureCode = snapshot.errorMessage?.toLowerCase().includes('home')
+          ? 'home_failed'
+          : 'mechanical_error';
+        order.reason = snapshot.errorMessage ?? 'hardware_error';
+        order.lastEventAt = Date.now();
+        order.sequence = nextSequence(this.state, order.envelope.orderId);
+        this.clearClaimIfMatches(order.envelope.orderId);
+        this.removeFromQueue(order.envelope.orderId);
+        this.persistence.saveOrder(order, null);
+        this.persistence.removeQueueEntry(order.envelope.orderId);
+        const event = makeOrderEvent({
+          type: 'PREPARATION_FAILED',
+          orderId: order.envelope.orderId,
+          tableId: order.envelope.tableId,
+          commandId: order.envelope.commandId,
+          sequence: order.sequence,
+          reason: order.reason,
+          failureCode: order.failureCode as OrderFailureCode,
+        });
+        this.emitEvent(order, event);
+        events.push(event);
+      }
+    }
     if (prev) {
       // Si el hardware indica que la bebida está lista, pero el estado era preparing/accepted,
       // pero el hardware NO publicó PREPARATION_COMPLETED, NO asumimos ready: esperamos el evento.

@@ -45,10 +45,25 @@ debug-android.map
 # PlatformIO / ESP-IDF
 /Kraken/.cache
 /Kraken/.pio
+**/.pio/
 /firmware/build/
 /firmware/sdkconfig
 /firmware/dependencies.lock
 
+# local ESP32 scratch projects
+/Codigo esp32 probar/
+
 # internal tooling
 /.agents
 .env
+
+# local Mosquitto runtime
+dev/mosquitto-*.log
+dev/mosquitto-*.pid
+server/controller-smoke*.log
+server/controller-live*.log
+
+# local controller runtime data
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal

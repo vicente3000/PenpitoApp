@@ -25,7 +25,7 @@ import {
   getRecipeDefaultOptions,
   piscolaProfiles,
 } from '../utils/drinkConfig';
-import { getOrderStatusLabel } from '../utils/preparation';
+import { getOrderStatusLabel, preparationSteps } from '../utils/preparation';
 import { formatTableLabel } from '../utils/tableQr';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -168,6 +168,15 @@ export function UserPortalScreen({
         }
       ]
     );
+  };
+
+  const getLiveOrderStatusLabel = (order: DrinkOrder) => {
+    if (order.status === 'preparing') {
+      const stepTitle = preparationSteps.find((step) => step.id === order.active_step_id)?.title;
+      return `Preparando · ${stepTitle ?? 'Iniciando'}`;
+    }
+    if (order.status === 'queued') return 'En cola';
+    return getOrderStatusLabel(order.status);
   };
 
   const handleSaveName = () => {
@@ -433,7 +442,7 @@ export function UserPortalScreen({
                     <View key={order.id} style={styles.orderRow}>
                       <View style={styles.orderRowInfo}>
                         <Text style={styles.orderTitle}>{getOrderDisplayName(order)}</Text>
-                        <Text style={styles.orderMeta}>{getOrderStatusLabel(order.status)}</Text>
+                        <Text style={styles.orderMeta}>{getLiveOrderStatusLabel(order)}</Text>
                       </View>
                       <View style={styles.orderActions}>
                         <Text
@@ -444,7 +453,7 @@ export function UserPortalScreen({
                             order.status === 'failed' && styles.statusFailed,
                           ]}
                         >
-                          {order.status === 'queued' ? 'En cola' : getOrderStatusLabel(order.status)}
+                          {order.status === 'preparing' ? 'Preparando' : getLiveOrderStatusLabel(order)}
                         </Text>
                         {order.status === 'queued' && order.guest_name === currentGuestName && (
                           <Button

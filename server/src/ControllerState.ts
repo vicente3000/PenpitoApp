@@ -54,6 +54,10 @@ export interface HardwareSnapshot {
   stateSequence: number;
   isDrinkReady: boolean;
   activeStepId: string | null;
+  completedStepIds: string[];
+  skippedStepIds: string[];
+  errorMessage: string | null;
+  startedAt: number | null;
   lastSeenAt: number;
   uptimeMs: number;
 }

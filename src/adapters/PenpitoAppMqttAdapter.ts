@@ -53,9 +53,7 @@ const RECONNECT_MAX_MS = 30_000;
 const PING_INTERVAL_MS = MQTT_KEEPALIVE_SECONDS * 500;
 const CONNECT_TIMEOUT_MS = 8_000;
 const PUBLISH_QUEUE_LIMIT = 200;
-const DEVICE_STALE_AFTER_MS = 30_000;
-const STALE_CHECK_INTERVAL_MS = 3_000;
-const DEFAULT_MQTT_WS_URL = 'ws://172.20.10.7:9001';
+const DEFAULT_MQTT_WS_URL = 'ws://192.168.243.219:9001';
 
 function decorrelatedJitter(attempt: number): number {
   const cap = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, attempt));
@@ -458,7 +456,6 @@ export class PenpitoAppMqttAdapter implements IAppV2Adapter {
   private shouldReconnect = false;
   private reconnectAttempts = 0;
   private currentBrokerStatus: ConnectionStatus = 'disconnected';
-  private staleCheckTimer: ReturnType<typeof setInterval> | null = null;
   private deviceOnline = false;
   private lastDeviceMessageAt: number | null = null;
   private lastAuthoritativeHardware: HardwareState | null = null;
@@ -500,10 +497,6 @@ export class PenpitoAppMqttAdapter implements IAppV2Adapter {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
-    }
-    if (this.staleCheckTimer) {
-      clearInterval(this.staleCheckTimer);
-      this.staleCheckTimer = null;
     }
     this.publishQueue = [];
     this.pendingSubscribes.clear();
@@ -736,7 +729,6 @@ export class PenpitoAppMqttAdapter implements IAppV2Adapter {
       this.client = client;
       this.isConnected = true;
       this.reconnectAttempts = 0;
-      this.startStaleCheck();
       this.fireConnectionChange('connected');
       this.flushPublishQueue();
       return true;
@@ -821,6 +813,9 @@ export class PenpitoAppMqttAdapter implements IAppV2Adapter {
       if (topic === TOPICS.CONTROLLER_HARDWARE_STATE()) {
         const state = parseHardwareState(safeJson(payload));
         if (state) {
+          this.deviceOnline = true;
+          this.lastDeviceMessageAt = Date.now();
+          this.fireConnectionChange();
           this.lastAuthoritativeHardware = state;
           this.lastRawHardwareState = {
             isOn: state.isOn,
@@ -881,7 +876,7 @@ export class PenpitoAppMqttAdapter implements IAppV2Adapter {
   private buildConnectionSnapshot(): ConnectionSnapshot {
     return {
       broker: this.currentBrokerStatus,
-      deviceOnline: this.isDeviceFresh(),
+      deviceOnline: this.deviceOnline,
       lastDeviceMessageAt: this.lastDeviceMessageAt,
       error: this.currentBrokerStatus === 'error' ? 'mqtt_unreachable' : null,
     };
@@ -912,25 +907,6 @@ export class PenpitoAppMqttAdapter implements IAppV2Adapter {
     });
   }
 
-  private isDeviceFresh(): boolean {
-    if (!this.deviceOnline) return false;
-    if (this.lastDeviceMessageAt == null) return false;
-    return Date.now() - this.lastDeviceMessageAt < DEVICE_STALE_AFTER_MS;
-  }
-
-  private startStaleCheck() {
-    if (this.staleCheckTimer) return;
-    this.staleCheckTimer = setInterval(() => {
-      const fresh = this.isDeviceFresh();
-      if (this.deviceOnline && !fresh) {
-        this.deviceOnline = false;
-        this.fireConnectionChange();
-      } else if (!this.deviceOnline && fresh) {
-        this.deviceOnline = true;
-        this.fireConnectionChange();
-      }
-    }, STALE_CHECK_INTERVAL_MS);
-  }
 }
 
 function safeJson(text: string): unknown {

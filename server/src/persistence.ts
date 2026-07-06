@@ -194,12 +194,22 @@ export function createSqlitePersistence(dbPath: string): ControllerPersistence {
   return {
     loadState(): ControllerState {
       const state = createInitialControllerState();
+      const queueHints = new Map<string, { fifoKey: number; groupId?: string }>();
       const orderRows = db
         .prepare(`SELECT * FROM controller_orders ORDER BY sequence ASC`)
         .all() as any[];
       for (const row of orderRows) {
         const order = rowToManagedOrder(row);
         state.orders.set(order.envelope.orderId, order);
+        if (
+          (order.state === 'queued' || order.state === 'dispatching') &&
+          typeof row.fifoKey === 'number'
+        ) {
+          queueHints.set(order.envelope.orderId, {
+            fifoKey: row.fifoKey,
+            groupId: row.groupId ?? order.envelope.groupId,
+          });
+        }
         const maxSeq = state.nextSequenceByOrder.get(order.envelope.orderId) ?? 0;
         if (order.sequence > maxSeq) {
           state.nextSequenceByOrder.set(order.envelope.orderId, order.sequence);
@@ -217,6 +227,30 @@ export function createSqlitePersistence(dbPath: string): ControllerPersistence {
         entry.state = order.state === 'dispatching' ? 'dispatching' : 'queued';
         state.queue.set(queueKey(entry.fifoKey, entry.orderId), entry);
         if (entry.fifoKey >= state.nextFifoKey) state.nextFifoKey = entry.fifoKey + 1;
+      }
+      for (const [orderId, hint] of queueHints) {
+        if ([...state.queue.values()].some((entry) => entry.orderId === orderId)) continue;
+        const order = state.orders.get(orderId);
+        if (!order) continue;
+        const entry: QueueEntry = {
+          orderId,
+          tableId: order.envelope.tableId,
+          commandId: order.envelope.commandId,
+          fifoKey: hint.fifoKey,
+          enqueuedAt: order.acceptedAt ?? order.envelope.requestedAt,
+          groupId: hint.groupId,
+          guestName: order.envelope.guestName,
+          state: order.state === 'dispatching' ? 'dispatching' : 'queued',
+        };
+        state.queue.set(queueKey(entry.fifoKey, entry.orderId), entry);
+        if (entry.fifoKey >= state.nextFifoKey) state.nextFifoKey = entry.fifoKey + 1;
+        insertQueueStmt.run({
+          orderId: entry.orderId,
+          tableId: entry.tableId,
+          fifoKey: entry.fifoKey,
+          enqueuedAt: entry.enqueuedAt,
+          groupId: entry.groupId ?? null,
+        });
       }
       const hwRow = db
         .prepare(`SELECT * FROM controller_hardware WHERE id = 1`)

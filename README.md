@@ -124,7 +124,7 @@ Topics por placa para configuracion:
 La app se conecta por WebSocket al broker:
 
 ```bash
-EXPO_PUBLIC_MQTT_WS_URL=ws://IP_DEL_BROKER:9001
+EXPO_PUBLIC_MQTT_WS_URL=ws://192.168.243.219:9001
 ```
 
 Mosquitto debe tener un listener TCP para el ESP32 y uno WebSocket para la app:
@@ -198,8 +198,8 @@ Verifica que el telefono, el broker Mosquitto y el ESP32 esten en la misma red.
 Si la app muestra "ESP32 online" sin que el hardware este conectado, puede ser que el broker tenga mensajes retenidos de una sesion anterior. Limpialos antes de empezar:
 
 ```bash
-mosquitto_pub -h IP_DEL_BROKER -p 1883 -t penpito/kraken/state -r -n
-mosquitto_pub -h IP_DEL_BROKER -p 1883 -t penpito/kraken/presence -r -n
+mosquitto_pub -h 192.168.243.219 -p 1883 -t penpito/kraken/state -r -n
+mosquitto_pub -h 192.168.243.219 -p 1883 -t penpito/kraken/presence -r -n
 ```
 
 La app tambien aplica un chequeo de "freshness" de 15 segundos: si no llega ningun mensaje nuevo del ESP en ese tiempo, lo marca como offline aunque haya retained messages.
@@ -207,13 +207,13 @@ La app tambien aplica un chequeo de "freshness" de 15 segundos: si no llega ning
 Si Mosquitto usa otra IP o puerto WebSocket, inicia Expo con:
 
 ```bash
-EXPO_PUBLIC_MQTT_WS_URL=ws://IP_DEL_BROKER:9001 npm start
+EXPO_PUBLIC_MQTT_WS_URL=ws://192.168.243.219:9001 npm start
 ```
 
 En PowerShell puedes hacerlo asi:
 
 ```powershell
-$env:EXPO_PUBLIC_MQTT_WS_URL='ws://IP_DEL_BROKER:9001'
+$env:EXPO_PUBLIC_MQTT_WS_URL='ws://192.168.243.219:9001'
 npm start
 ```
 

@@ -6,7 +6,13 @@ Se conecta al mismo broker Mosquitto que la app, escucha los comandos en `penpit
 
 ## Uso
 
-1. Instala Mosquitto local con WebSocket habilitado en el puerto 9001.
+1. Inicia el broker Mosquitto local con TCP y WebSocket:
+
+   ```bash
+   npm run mqtt:start
+   npm run mqtt:test
+   ```
+
 2. En otra terminal, desde la raiz del proyecto:
 
    ```bash
@@ -16,7 +22,7 @@ Se conecta al mismo broker Mosquitto que la app, escucha los comandos en `penpit
 3. Configura la app para apuntar a tu broker local:
 
    ```
-   EXPO_PUBLIC_MQTT_WS_URL=ws://TU_IP_LOCAL:9001
+   EXPO_PUBLIC_MQTT_WS_URL=ws://192.168.243.219:9001
    ```
 
 4. Inicia Expo y prueba los flujos completos: encendido, preparacion, calibracion, parada de emergencia, sync de sesiones y ordenes.

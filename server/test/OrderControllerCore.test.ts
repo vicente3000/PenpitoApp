@@ -177,6 +177,29 @@ describe('OrderControllerCore', () => {
     expect(order!.failureCode).toBe('home_failed');
   });
 
+  it('hardware state en error con activeOrderId marca el pedido failed', () => {
+    core.submitOrder(envelope('ord_hw_error', 1));
+    const cmd = bus.hardwareCommands[0];
+    core.handleCommandAck(ack(cmd.commandId, true));
+
+    const result = core.updateHardwareState(
+      hardwareState({
+        status: 'error',
+        activeOrderId: 'ord_hw_error',
+        activeTableId: 1,
+        activeCommandId: cmd.commandId,
+        errorMessage: 'Fallo en calibracion Home',
+      })
+    );
+
+    const order = core.getOrder('ord_hw_error')!;
+    expect(order.state).toBe('failed');
+    expect(order.failureCode).toBe('home_failed');
+    expect(order.reason).toBe('Fallo en calibracion Home');
+    expect(result.events.some((event) => event.type === 'PREPARATION_FAILED')).toBe(true);
+    expect(core.getGlobalQueue()).toHaveLength(0);
+  });
+
   it('duplicate PREPARE no prepara dos tragos: el controller ya envió el comando y el firmware cachea por commandId', () => {
     // Una simulación más alta: simulamos que el firmware recibe el PREPARE dos veces
     // (publicamos el mismo comando dos veces). El core sólo encola una vez.
@@ -197,6 +220,28 @@ describe('OrderControllerCore', () => {
     const conflict = { ...env, commandId: 'cmd-DIFFERENT' };
     const result = core.submitOrder(conflict);
     expect(result.accepted).toBe(false);
+  });
+
+  it('ACK machine_busy devuelve el pedido a queued para reintentar', () => {
+    core.submitOrder(envelope('ord_busy', 1));
+    const cmd = bus.hardwareCommands[0];
+    const result = core.handleCommandAck(
+      makeCommandAck({
+        commandId: cmd.commandId,
+        accepted: false,
+        reason: 'machine_busy',
+        failureCode: 'machine_busy',
+        timestamp: Date.now(),
+      })
+    );
+
+    const order = core.getOrder('ord_busy')!;
+    expect(result.accepted).toBe(true);
+    expect(order.state).toBe('queued');
+    expect(order.failureCode).toBeUndefined();
+    expect(order.retryCount).toBe(1);
+    expect(result.events).toHaveLength(0);
+    expect(core.getGlobalQueue().map((q) => q.orderId)).toEqual(['ord_busy']);
   });
 
   it('watchdog: pedido en dispatching sin HARDWARE_ACCEPTED → failed por timeout_preparation_start', () => {

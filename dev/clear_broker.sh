@@ -4,7 +4,7 @@
 
 set -e
 
-BROKER_HOST="${1:-172.20.10.7}"
+BROKER_HOST="${1:-192.168.243.219}"
 BROKER_PORT="${2:-1883}"
 
 if ! command -v mosquitto_pub >/dev/null 2>&1; then

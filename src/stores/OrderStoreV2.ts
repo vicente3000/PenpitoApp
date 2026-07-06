@@ -18,11 +18,11 @@ import { create } from 'zustand';
 
 import { ConnectionSnapshot } from '../adapters/ICommunicationAdapter';
 import { DrinkOrder, DrinkOrderStatus, PreparationStepId } from '../models';
+import { getSkippedSteps } from '../utils/preparation';
 import { PenpitoAppMqttAdapter } from '../adapters/PenpitoAppMqttAdapter';
 import {
   HardwareState,
   OrderEvent,
-  OrderEventType,
   OrderState,
   PROTOCOL_VERSION,
   QueueSnapshot,
@@ -75,12 +75,64 @@ function mapStateToStatus(state: OrderState): DrinkOrderStatus {
 
 const projectionCache = new WeakMap<QueueSnapshot, DrinkOrder[]>();
 
-function snapshotToDrinkOrders(snap: QueueSnapshot): DrinkOrder[] {
-  const cached = projectionCache.get(snap);
-  if (cached) return cached;
+const PREPARATION_STEP_IDS = new Set<PreparationStepId>([
+  'cup_dispenser',
+  'ice_dispenser',
+  'alcohol_dispenser',
+  'agitation_system',
+  'carbonated_station',
+  'ready',
+]);
+
+function toPreparationStepId(value: string | null | undefined): PreparationStepId | undefined {
+  return value && PREPARATION_STEP_IDS.has(value as PreparationStepId)
+    ? (value as PreparationStepId)
+    : undefined;
+}
+
+function toPreparationStepIds(values: readonly string[] | undefined): PreparationStepId[] {
+  if (!values) return [];
+  const out: PreparationStepId[] = [];
+  for (const value of values) {
+    const step = toPreparationStepId(value);
+    if (step && !out.includes(step)) out.push(step);
+  }
+  return out;
+}
+
+function snapshotToDrinkOrders(
+  snap: QueueSnapshot,
+  hardware?: HardwareState | null,
+  recentEvents?: Map<string, OrderEvent>
+): DrinkOrder[] {
+  if (!hardware && !recentEvents) {
+    const cached = projectionCache.get(snap);
+    if (cached) return cached;
+  }
 
   const result: DrinkOrder[] = [];
   for (const entry of snap.orders) {
+    const event = recentEvents?.get(entry.orderId);
+    const isHardwareOrder = hardware?.activeOrderId === entry.orderId;
+    const eventActiveStepId = toPreparationStepId(event?.activeStepId);
+    const hardwareActiveStepId = isHardwareOrder
+      ? toPreparationStepId(hardware?.activeStepId)
+      : undefined;
+    const activeStepId = hardwareActiveStepId ?? eventActiveStepId;
+    const defaultSkipped = getSkippedSteps(entry.recipeId, entry.options.iceCount);
+    const completedStepIds = isHardwareOrder
+      ? toPreparationStepIds(hardware?.completedStepIds)
+      : toPreparationStepIds(event?.completedStepIds);
+    const skippedStepIds = isHardwareOrder
+      ? toPreparationStepIds(hardware?.skippedStepIds)
+      : toPreparationStepIds(event?.skippedStepIds);
+    const statusFromSnapshot = mapStateToStatus(entry.state);
+    const status = isHardwareOrder && hardware?.isDrinkReady
+      ? 'ready'
+      : isHardwareOrder && hardware?.status === 'preparing'
+        ? 'preparing'
+        : statusFromSnapshot;
+
     result.push({
       id: entry.orderId,
       recipe_id: entry.recipeId,
@@ -88,21 +140,24 @@ function snapshotToDrinkOrders(snap: QueueSnapshot): DrinkOrder[] {
       table_number: snap.tableId,
       qr_value: '',
       requested_at: entry.requestedAt,
-      status: mapStateToStatus(entry.state),
+      status,
       ice_count: entry.options.iceCount,
       alcohol_oz: entry.options.alcoholOz,
       mixer_oz: entry.options.mixerOz,
       piscola_intensity: entry.options.piscolaIntensity,
       est_time_seconds: 0,
-      completed_step_ids: [],
-      skipped_step_ids: [],
-      is_drink_ready: entry.state === 'ready',
+      active_step_id: activeStepId,
+      completed_step_ids: completedStepIds,
+      skipped_step_ids: skippedStepIds.length ? skippedStepIds : defaultSkipped,
+      is_drink_ready: status === 'ready',
       queued_at: entry.requestedAt,
+      started_at: status === 'preparing' ? (hardware?.startedAt ?? event?.timestamp) : undefined,
+      finished_at: status === 'ready' ? event?.timestamp : undefined,
       guest_name: entry.guestName,
       group_id: entry.groupId,
     });
   }
-  projectionCache.set(snap, result);
+  if (!hardware && !recentEvents) projectionCache.set(snap, result);
   return result;
 }
 
@@ -229,10 +284,15 @@ export type OrderStoreV2 = UseBoundStore<StoreApi<OrderStoreV2State>> & {
   __dispose?: () => void;
 };
 
-export function projectOrdersForTable(snapshots: Map<number, QueueSnapshot>, tableId: number): DrinkOrder[] {
+export function projectOrdersForTable(
+  snapshots: Map<number, QueueSnapshot>,
+  tableId: number,
+  hardware?: HardwareState | null,
+  recentEvents?: Map<string, OrderEvent>
+): DrinkOrder[] {
   const snap = snapshots.get(tableId);
   if (!snap) return [];
-  return snapshotToDrinkOrders(snap);
+  return snapshotToDrinkOrders(snap, hardware, recentEvents);
 }
 
 export { mapStateToStatus, snapshotToDrinkOrders };

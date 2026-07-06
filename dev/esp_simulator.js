@@ -27,7 +27,7 @@ function loadBrokerUrl() {
       }
     }
   } catch (_) {}
-  return process.env.EXPO_PUBLIC_MQTT_WS_URL || 'ws://172.20.10.7:9001';
+  return process.env.EXPO_PUBLIC_MQTT_WS_URL || 'ws://192.168.243.219:9001';
 }
 
 const BROKER_URL = loadBrokerUrl();

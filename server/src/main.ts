@@ -39,7 +39,7 @@ import {
 import { ControllerState, QueueEntry } from './ControllerState';
 
 function loadConfig(): { mqttUrl: string; dbPath: string; clientId: string } {
-  const mqttUrl = process.env.MQTT_URL || 'mqtt://172.20.10.7:1883';
+  const mqttUrl = process.env.MQTT_URL || 'mqtt://192.168.243.219:1883';
   const dbPath = process.env.CONTROLLER_DB || path.resolve(process.cwd(), 'data/controller.db');
   const clientId =
     process.env.CONTROLLER_ID || `penpito-controller-${process.pid}-${Date.now().toString(36)}`;
@@ -48,6 +48,8 @@ function loadConfig(): { mqttUrl: string; dbPath: string; clientId: string } {
 }
 
 class ConsoleBus implements ControllerEventBus {
+  constructor(private readonly mqttClient?: ControllerMqttClient) {}
+
   log(message: string, meta?: Record<string, unknown>): void {
     if (process.env.LOG_LEVEL === 'debug' || meta?.level === 'warn') {
       console.log(`[controller] ${message}`, meta ? JSON.stringify(meta) : '');
@@ -63,7 +65,7 @@ class ConsoleBus implements ControllerEventBus {
     /* El cliente MQTT lo hace. */
   }
   publishHardwareCommand(command: CommandEnvelope): void {
-    /* El cliente MQTT lo hace. */
+    this.mqttClient?.publishHardwareCommand(command);
   }
 }
 
@@ -79,7 +81,7 @@ async function main(): Promise<void> {
     retainQueueTables: true,
   };
   const mqttClient = new ControllerMqttClient(mqttConfig);
-  const core = new OrderControllerCore(persistence, new ConsoleBus());
+  const core = new OrderControllerCore(persistence, new ConsoleBus(mqttClient));
 
   mqttClient.on('order_submit', (envelope: OrderEnvelope) => {
     const result = core.submitOrder(envelope);
@@ -281,11 +283,11 @@ function toHardwareStateMessage(snapshot: ControllerState['hardware'] extends in
     activeCommandId: snapshot.activeCommandId,
     stateSequence: snapshot.stateSequence,
     activeStepId: snapshot.activeStepId,
-    completedStepIds: [],
-    skippedStepIds: [],
+    completedStepIds: snapshot.completedStepIds ?? [],
+    skippedStepIds: snapshot.skippedStepIds ?? [],
     isDrinkReady: snapshot.isDrinkReady,
-    errorMessage: null,
-    startedAt: null,
+    errorMessage: snapshot.errorMessage ?? null,
+    startedAt: snapshot.startedAt ?? null,
     uptimeMs: snapshot.uptimeMs,
   };
 }

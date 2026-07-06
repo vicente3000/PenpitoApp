@@ -2,7 +2,7 @@ import { ICommunicationAdapter, ConnectionSnapshot, ConnectionStatus } from './I
 import { DeviceCommand, MachineState } from '../models';
 import { parseMachineState, parseAck, isValidDeviceTarget, isValidRequestId, sanitizeCommand } from './payloadParsers';
 
-const DEFAULT_MQTT_WS_URL = 'ws://172.20.10.7:9001';
+const DEFAULT_MQTT_WS_URL = 'ws://192.168.243.219:9001';
 const MQTT_KEEPALIVE_SECONDS = 30;
 const COMMAND_ACK_TIMEOUT_MS = 10000;
 const RECONNECT_BASE_MS = 1000;

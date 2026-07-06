@@ -7,6 +7,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "mqtt:start": "powershell -ExecutionPolicy Bypass -File dev/start-mqtt.ps1",
+    "mqtt:stop": "powershell -ExecutionPolicy Bypass -File dev/stop-mqtt.ps1",
+    "mqtt:test": "node dev/test-mqtt.js",
     "test": "jest",
     "test:watch": "jest --watch"
   },

@@ -2,7 +2,7 @@ import {
   projectOrdersForTable,
   mapStateToStatus,
 } from '../../../src/stores/OrderStoreV2';
-import { QueueSnapshot, PROTOCOL_VERSION, OrderState } from '../../../src/protocol/types';
+import { HardwareState, QueueSnapshot, PROTOCOL_VERSION, OrderState } from '../../../src/protocol/types';
 
 function makeSnap(orders: Array<{ orderId: string; commandId: string; recipeId: string; state: OrderState; requestedAt: number; iceCount?: number }>): QueueSnapshot {
   return {
@@ -49,6 +49,35 @@ describe('OrderStoreV2 (proyección)', () => {
     expect(mapStateToStatus('ready')).toBe('ready');
     expect(mapStateToStatus('served')).toBe('served');
     expect(mapStateToStatus('failed')).toBe('failed');
+  });
+
+  it('proyecta el paso activo del hardware en el pedido preparando', () => {
+    const snap = makeSnap([
+      { orderId: 'b', commandId: 'cb', recipeId: 'negroni', state: 'preparing', requestedAt: 2000 },
+    ]);
+    const hardware: HardwareState = {
+      protocolVersion: PROTOCOL_VERSION,
+      bootId: 'boot-test',
+      isOn: true,
+      status: 'preparing',
+      activeOrderId: 'b',
+      activeTableId: 1,
+      activeCommandId: 'cb',
+      stateSequence: 1,
+      activeStepId: 'ice_dispenser',
+      completedStepIds: ['cup_dispenser'],
+      skippedStepIds: ['carbonated_station'],
+      isDrinkReady: false,
+      errorMessage: null,
+      startedAt: 1234,
+      uptimeMs: 5000,
+    };
+    const map = new Map([[1, snap]]);
+    const orders = projectOrdersForTable(map, 1, hardware);
+    expect(orders[0].status).toBe('preparing');
+    expect(orders[0].active_step_id).toBe('ice_dispenser');
+    expect(orders[0].completed_step_ids).toEqual(['cup_dispenser']);
+    expect(orders[0].skipped_step_ids).toEqual(['carbonated_station']);
   });
 
   it('mantiene la misma referencia del array para el mismo QueueSnapshot (caching en WeakMap)', () => {

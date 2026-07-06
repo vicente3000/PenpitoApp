@@ -9,9 +9,9 @@
 // ═══════════════════════════════════════════
 //  CONFIGURACIÓN DE RED Y MQTT v2
 // ═══════════════════════════════════════════
-const char *WIFI_SSID = "iPhone de Gael";
-const char *WIFI_PASSWORD = "12345678";
-const char *MQTT_HOST = "172.20.10.7";
+const char *WIFI_SSID = "Xiaomi 14";
+const char *WIFI_PASSWORD = "217646626";
+const char *MQTT_HOST = "192.168.243.219";
 const int MQTT_PORT = 1883;
 
 // Tópicos v2 (deben coincidir con src/protocol/topics.ts)
@@ -911,7 +911,7 @@ void handleMovementError(const String &msg) {
   status = STATUS_ERROR;
   errorMessage = msg;
   stopAllHardware();
-  publishEvent("PREPARATION_FAILED", msg, "mechanical_error");
+  publishEvent("PREPARATION_FAILED", msg.c_str(), "mechanical_error");
   publishState();
 }
 
@@ -946,7 +946,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     }
     String ackBody;
     serializeJson(ackDoc, ackBody);
-    client.publish(TOPIC_ACK, ackBody.c_str(), 1, false);
+    client.publish(TOPIC_ACK, ackBody.c_str(), false);
     in_mqtt_callback = false;
     return;
   }
@@ -1021,8 +1021,8 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       failureCode = "machine_busy";
     } else {
       preferences.begin("kraken", false);
-      if (doc["payload"].containsKey("rates")) {
-        JsonArray rates = doc["payload"]["rates"];
+      if (doc["payload"]["rates"].is<JsonArray>()) {
+        JsonArray rates = doc["payload"]["rates"].as<JsonArray>();
         for (int i = 0; i < 7; i++) {
           if (!rates[i].isNull()) {
             b_ml_ps[i] = rates[i].as<float>();
@@ -1032,8 +1032,8 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
           }
         }
       }
-      if (doc["payload"].containsKey("positions")) {
-        JsonArray positions = doc["payload"]["positions"];
+      if (doc["payload"]["positions"].is<JsonArray>()) {
+        JsonArray positions = doc["payload"]["positions"].as<JsonArray>();
         if (positions.size() >= 8) {
           POS_CUP = positions[0].as<int>();
           POS_ICE = positions[1].as<int>();
@@ -1088,7 +1088,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 
   String ackBody;
   serializeJson(ackDoc, ackBody);
-  client.publish(TOPIC_ACK, ackBody.c_str(), 1, false);
+  client.publish(TOPIC_ACK, ackBody.c_str(), false);
   cacheRequestResult(commandId, ok, reason, currentOrder.tableId, currentOrder.orderId, currentOrder.valid);
   in_mqtt_callback = false;
 
@@ -1135,7 +1135,7 @@ void publishState() {
 
   String body;
   serializeJson(stateDoc, body);
-  client.publish(TOPIC_STATE, body.c_str(), 1, true);
+  client.publish(TOPIC_STATE, body.c_str(), true);
 
   last_state_publish = millis();
 }
@@ -1175,7 +1175,7 @@ void publishEvent(const char *type, const char *reason, const char *failureCode)
   currentOrder.sequence++;
   String body;
   serializeJson(eventDoc, body);
-  client.publish(TOPIC_EVENT, body.c_str(), 1, false);
+  client.publish(TOPIC_EVENT, body.c_str(), false);
 }
 
 void executeTestHardware(const String &type, int val, int pin, int duration) {

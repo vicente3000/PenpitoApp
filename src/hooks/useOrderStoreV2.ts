@@ -29,6 +29,13 @@ import { HardwareState, OrderOptions, QueueSnapshot } from '../protocol/types';
 
 let _store: OrderStoreV2 | null = null;
 
+const DISCONNECTED_CONNECTION_SNAPSHOT: ConnectionSnapshot = {
+  broker: 'disconnected',
+  deviceOnline: false,
+  lastDeviceMessageAt: null,
+  error: 'no_connection_snapshot',
+};
+
 export function getOrCreateOrderStoreV2(): OrderStoreV2 {
   if (_store) return _store;
   _store = createOrderStoreV2(deviceService.penpitoAdapter);
@@ -84,13 +91,26 @@ export function useTableOrders(tableId: number): DrinkOrder[] {
   );
   // Cache estable: el array de DrinkOrder[] cambia de referencia en cada snapshot,
   // pero solo re-renderizamos si el contenido realmente cambió.
-  const ref = useRef<{ orders: DrinkOrder[]; snap: QueueSnapshot | undefined } | null>(null);
+  const ref = useRef<{
+    orders: DrinkOrder[];
+    snap: QueueSnapshot | undefined;
+    hardware: OrderStoreV2State['hardware'];
+    recentEvents: OrderStoreV2State['recentEvents'];
+  } | null>(null);
   const getSnapshot = useMemo(
     () => () => {
-      const snap = store.getState().snapshots.get(tableId);
+      const state = store.getState();
+      const snap = state.snapshots.get(tableId);
       const prev = ref.current;
-      if (prev && prev.snap === snap) return prev.orders;
-      const next = projectOrdersForTable(store.getState().snapshots, tableId);
+      if (
+        prev &&
+        prev.snap === snap &&
+        prev.hardware === state.hardware &&
+        prev.recentEvents === state.recentEvents
+      ) {
+        return prev.orders;
+      }
+      const next = projectOrdersForTable(state.snapshots, tableId, state.hardware, state.recentEvents);
       // Comparación shallow: si el número y orden de orders no cambió, reusar.
       if (prev && prev.orders.length === next.length) {
         let same = true;
@@ -98,11 +118,21 @@ export function useTableOrders(tableId: number): DrinkOrder[] {
           if (prev.orders[i] !== next[i]) { same = false; break; }
         }
         if (same) {
-          ref.current = { orders: prev.orders, snap };
+          ref.current = {
+            orders: prev.orders,
+            snap,
+            hardware: state.hardware,
+            recentEvents: state.recentEvents,
+          };
           return prev.orders;
         }
       }
-      ref.current = { orders: next, snap };
+      ref.current = {
+        orders: next,
+        snap,
+        hardware: state.hardware,
+        recentEvents: state.recentEvents,
+      };
       return next;
     },
     [store, tableId]
@@ -125,18 +155,25 @@ export function useAllTables(): Map<number, DrinkOrder[]> {
   );
   const ref = useRef<{
     snapshots: Map<number, QueueSnapshot>;
+    hardware: OrderStoreV2State['hardware'];
+    recentEvents: OrderStoreV2State['recentEvents'];
     map: Map<number, DrinkOrder[]>;
   } | null>(null);
   const getSnapshot = useMemo(
     () => () => {
       const state = store.getState();
       const prev = ref.current;
-      if (prev && prev.snapshots === state.snapshots) {
+      if (
+        prev &&
+        prev.snapshots === state.snapshots &&
+        prev.hardware === state.hardware &&
+        prev.recentEvents === state.recentEvents
+      ) {
         return prev.map;
       }
       const next = new Map<number, DrinkOrder[]>();
       for (const [tableId, snap] of state.snapshots) {
-        const projected = projectOrdersForTable(state.snapshots, tableId);
+        const projected = projectOrdersForTable(state.snapshots, tableId, state.hardware, state.recentEvents);
         if (projected.length > 0) next.set(tableId, projected);
       }
       // Shallow compare con cache: si mismo tamaño y mismas referencias, reusar.
@@ -147,11 +184,21 @@ export function useAllTables(): Map<number, DrinkOrder[]> {
           if (!pv || pv !== v) { same = false; break; }
         }
         if (same) {
-          ref.current = { snapshots: state.snapshots, map: prev.map };
+          ref.current = {
+            snapshots: state.snapshots,
+            hardware: state.hardware,
+            recentEvents: state.recentEvents,
+            map: prev.map,
+          };
           return prev.map;
         }
       }
-      ref.current = { snapshots: state.snapshots, map: next };
+      ref.current = {
+        snapshots: state.snapshots,
+        hardware: state.hardware,
+        recentEvents: state.recentEvents,
+        map: next,
+      };
       return next;
     },
     [store]
@@ -184,24 +231,14 @@ export function useControllerConnection(): {
       if (s.connectionSnapshot) {
         return s.connectionSnapshot;
       }
-      return {
-        broker: 'disconnected',
-        deviceOnline: false,
-        lastDeviceMessageAt: null,
-        error: 'no_connection_snapshot',
-      };
+      return DISCONNECTED_CONNECTION_SNAPSHOT;
     },
     [store]
   );
   const snapshot = useSyncExternalStore(
     subscribe,
     getSnapshot,
-    () => ({
-      broker: 'disconnected',
-      deviceOnline: false,
-      lastDeviceMessageAt: null,
-      error: 'no_connection_snapshot',
-    } as ConnectionSnapshot)
+    () => DISCONNECTED_CONNECTION_SNAPSHOT
   );
   return { isConnected, snapshot };
 }

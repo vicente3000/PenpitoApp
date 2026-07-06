@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "description": "Order Controller autoritativo del broker MQTT Penpito (protocolo v2).",
-  "main": "dist/main.js",
+  "main": "dist/server/src/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
+    "start": "node dist/server/src/main.js",
     "dev": "tsx watch src/main.ts",
     "test": "jest --config jest.config.cjs"
   },
