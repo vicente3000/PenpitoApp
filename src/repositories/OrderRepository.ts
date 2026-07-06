@@ -25,6 +25,8 @@ type OrderRow = {
   guest_name: string | null;
   group_id: string | null;
   split_method: string | null;
+  order_index: number | null;
+  ready_since: number | null;
 };
 
 function parseStepIds(value: string): PreparationStepId[] {
@@ -60,14 +62,16 @@ function mapRow(row: OrderRow): DrinkOrder {
     guest_name: row.guest_name ?? undefined,
     group_id: row.group_id ?? undefined,
     split_method: (row.split_method as DrinkOrder['split_method']) ?? undefined,
+    order_index: row.order_index ?? undefined,
+    ready_since: row.ready_since ?? undefined,
   };
 }
 
 export class OrderRepository {
   async getAllOrders(): Promise<DrinkOrder[]> {
     const db = await getDb();
-    const rows = await db.getAllAsync<OrderRow>('SELECT * FROM orders ORDER BY requested_at DESC');
-    return rows.map(mapRow).sort((a, b) => b.requested_at - a.requested_at);
+    const rows = await db.getAllAsync<OrderRow>('SELECT * FROM orders ORDER BY requested_at ASC');
+    return rows.map(mapRow);
   }
 
   async saveOrder(order: DrinkOrder): Promise<void> {
@@ -96,8 +100,10 @@ export class OrderRepository {
         queued_at,
         guest_name,
         group_id,
-        split_method
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        split_method,
+        order_index,
+        ready_since
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         order.id,
         order.recipe_id,
@@ -122,6 +128,8 @@ export class OrderRepository {
         order.guest_name ?? null,
         order.group_id ?? null,
         order.split_method ?? null,
+        order.order_index ?? null,
+        order.ready_since ?? null,
       ]
     );
   }

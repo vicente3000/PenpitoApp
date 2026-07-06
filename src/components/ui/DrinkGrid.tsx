@@ -23,15 +23,19 @@ export interface DrinkGridProps {
 function getDrinkCardImage(recipeId: string): ImageSourcePropType | null {
   switch (recipeId) {
     case 'piscola':
-      return require('../../../assets/images/drink-piscola-carousel.png');
+      return require('../../../assets/images/carrusel tragos/piscola.png');
     case 'whisky_rocks':
+      return require('../../../assets/images/carrusel tragos/whisky rocks.png');
     case 'godfather':
-      return require('../../../assets/images/drink-whisky-carousel.png');
+      return require('../../../assets/images/carrusel tragos/godfather.png');
     case 'negroni':
+      return require('../../../assets/images/carrusel tragos/negroni.png');
     case 'boulevardier':
+      return require('../../../assets/images/carrusel tragos/boulevardier.png');
     case 'americano':
+      return require('../../../assets/images/carrusel tragos/americano.png');
     case 'campari_rocks':
-      return require('../../../assets/images/drink-negroni-carousel.png');
+      return require('../../../assets/images/carrusel tragos/campari rocks.png');
     default:
       return null;
   }
@@ -146,7 +150,9 @@ const styles = StyleSheet.create({
   },
   drinkImage: {
     width: '100%',
+    minWidth: '100%',
     height: 120,
+    alignSelf: 'stretch',
     backgroundColor: Colors.surfaceHighlight,
   },
   imagePlaceholder: {

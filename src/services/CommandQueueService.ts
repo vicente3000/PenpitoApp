@@ -7,10 +7,15 @@ type QueuedCommand = {
   retries: number;
 };
 
+function isEmergencyStop(command: DeviceCommand): boolean {
+  return command.cmd === 'POWER' && String(command.val).toUpperCase() === 'OFF';
+}
+
 class CommandQueueService {
   private queue: QueuedCommand[] = [];
   private isProcessing = false;
   private readonly maxRetries = 3;
+  private readonly retryDelayMs = 2000;
 
   enqueue(command: DeviceCommand): Promise<boolean> {
     const cmdWithId = {
@@ -18,8 +23,18 @@ class CommandQueueService {
       requestId: command.requestId || `cmd-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     };
     return new Promise((resolve) => {
-      this.queue.push({ command: cmdWithId, resolve, retries: 0 });
-      console.log(`[CommandQueue] Enqueued: ${cmdWithId.cmd}=${cmdWithId.val} (${cmdWithId.requestId})`);
+      const entry: QueuedCommand = { command: cmdWithId, resolve, retries: 0 };
+      if (isEmergencyStop(cmdWithId)) {
+        const insertAt = this.queue.findIndex((q) => !isEmergencyStop(q.command));
+        if (insertAt === -1) {
+          this.queue.push(entry);
+        } else {
+          this.queue.splice(insertAt, 0, entry);
+        }
+      } else {
+        this.queue.push(entry);
+      }
+      console.log(`[CommandQueue] Enqueued: ${cmdWithId.cmd}=${cmdWithId.val} (${cmdWithId.requestId})${isEmergencyStop(cmdWithId) ? ' [PRIORITY]' : ''}`);
       this.processQueue();
     });
   }
@@ -43,8 +58,8 @@ class CommandQueueService {
             this.queue.shift();
             entry.resolve(false);
           } else {
-            console.warn(`[CommandQueue] Command failed, retrying (${entry.retries}/${this.maxRetries}) in 2s...`);
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            console.warn(`[CommandQueue] Command failed, retrying (${entry.retries}/${this.maxRetries}) in ${this.retryDelayMs}ms...`);
+            await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs));
           }
         }
       } catch (err) {
@@ -54,8 +69,8 @@ class CommandQueueService {
           this.queue.shift();
           entry.resolve(false);
         } else {
-          console.error(`[CommandQueue] Error sending command, retrying (${entry.retries}/${this.maxRetries}) in 2s...`, err);
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          console.error(`[CommandQueue] Error sending command, retrying (${entry.retries}/${this.maxRetries}) in ${this.retryDelayMs}ms...`, err);
+          await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs));
         }
       }
     }

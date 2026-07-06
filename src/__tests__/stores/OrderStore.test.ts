@@ -249,13 +249,15 @@ describe('OrderStore - syncFromMachine lifecycle', () => {
       expect(useOrderStore.getState().activeOrderId).toBe('queued-1');
     });
 
-    it('should NOT trigger if machine is idle but has drink ready', async () => {
+    it('should send TAKEN if machine is idle but has drink ready with no local ready order', async () => {
       const queued = { ...baseOrder, id: 'queued-1', status: 'queued' as const, started_at: undefined };
       useOrderStore.setState({ orders: [queued] });
 
       await useOrderStore.getState().syncFromMachine({ isOn: true, status: 'idle', isDrinkReady: true });
 
-      expect(commandQueueService.enqueue).not.toHaveBeenCalled();
+      expect(commandQueueService.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ cmd: 'TAKEN', target: 'kraken' })
+      );
       expect(useOrderStore.getState().orders[0].status).toBe('queued');
     });
   });
@@ -282,7 +284,7 @@ describe('OrderStore - syncFromMachine lifecycle', () => {
       expect(useOrderStore.getState().activeOrderId).toBe('queued-1');
     });
 
-    it('should NOT bind a queued order without started_at (different device)', async () => {
+    it('should bind a queued order without started_at when machine is preparing (recovery fix)', async () => {
       const queued = { ...baseOrder, id: 'queued-1', status: 'queued' as const, recipe_id: 'negroni', started_at: undefined };
       useOrderStore.setState({ orders: [queued] });
 
@@ -297,11 +299,12 @@ describe('OrderStore - syncFromMachine lifecycle', () => {
       });
 
       const updated = useOrderStore.getState().orders[0];
-      expect(updated.status).toBe('queued');
-      expect(orderRepository.saveOrder).not.toHaveBeenCalled();
+      expect(updated.status).toBe('preparing');
+      expect(orderRepository.saveOrder).toHaveBeenCalled();
+      expect(useOrderStore.getState().activeOrderId).toBe('queued-1');
     });
 
-    it('should NOT bind a queued order as ready when machine has isDrinkReady (recovery disabled)', async () => {
+    it('should bind a queued order as ready when machine has isDrinkReady (recovery enabled for ready status)', async () => {
       const queued = { ...baseOrder, id: 'queued-1', status: 'queued' as const, recipe_id: 'negroni', started_at: 1000 };
       useOrderStore.setState({ orders: [queued] });
 
@@ -316,7 +319,7 @@ describe('OrderStore - syncFromMachine lifecycle', () => {
       });
 
       const updated = useOrderStore.getState().orders[0];
-      expect(updated.status).toBe('queued');
+      expect(updated.status).toBe('ready');
     });
   });
 
@@ -359,7 +362,7 @@ describe('OrderStore - syncFromMachine lifecycle', () => {
     });
 
     it('should mark order as failed if machine goes idle without isDrinkReady while order was preparing', async () => {
-      const active = { ...baseOrder, status: 'preparing' as const };
+      const active = { ...baseOrder, status: 'preparing' as const, started_at: Date.now() - 6000 };
       useOrderStore.setState({ orders: [active], activeOrderId: 'order-1' });
 
       await useOrderStore.getState().syncFromMachine({
@@ -425,6 +428,9 @@ describe('OrderStore - markOrderServed', () => {
       target: 'kraken',
     });
     expect(useOrderStore.getState().orders[0].status).toBe('served');
+    expect(useOrderStore.getState().activeOrderId).toBe('ready-1');
+
+    await useOrderStore.getState().syncFromMachine({ isOn: true, status: 'idle', isDrinkReady: false });
     expect(useOrderStore.getState().activeOrderId).toBeNull();
   });
 });
@@ -538,5 +544,29 @@ describe('OrderStore - multi-drink sequential', () => {
 
     expect(useOrderStore.getState().orders.find(o => o.id === 'q-2')?.status).toBe('preparing');
     expect(useOrderStore.getState().orders.find(o => o.id === 'q-3')?.status).toBe('queued');
+  });
+
+  it('should clean up orphaned preparing orders and not mark them as failed', async () => {
+    const q1: DrinkOrder = {
+      id: 'q-1', recipe_id: 'negroni', recipe_name: 'Negroni', table_number: 1,
+      qr_value: 'qr-1', requested_at: 1000, status: 'preparing', ice_count: 3,
+      completed_step_ids: [], skipped_step_ids: [], is_drink_ready: false,
+      est_time_seconds: 22, split_method: 'equal_split', started_at: Date.now(),
+    };
+    const orphan: DrinkOrder = {
+      id: 'orphan-1', recipe_id: 'piscola', recipe_name: 'Piscola', table_number: 1,
+      qr_value: 'qr-2', requested_at: 2000, status: 'preparing', ice_count: 4,
+      completed_step_ids: [], skipped_step_ids: [], is_drink_ready: false,
+      est_time_seconds: 28, split_method: 'equal_split', started_at: Date.now() - 10000,
+    };
+
+    useOrderStore.setState({ orders: [q1, orphan], activeOrderId: 'q-1' });
+
+    // When syncFromMachine is called while q1 is preparing, orphan should be cleaned up and reset to queued!
+    await useOrderStore.getState().syncFromMachine({ isOn: true, status: 'preparing', isDrinkReady: false });
+
+    const orphanAfter = useOrderStore.getState().orders.find(o => o.id === 'orphan-1');
+    expect(orphanAfter?.status).toBe('queued');
+    expect(orphanAfter?.started_at).toBeUndefined();
   });
 });

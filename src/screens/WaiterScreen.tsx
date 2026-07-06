@@ -16,8 +16,6 @@ import { formatTableLabel } from '../utils/tableQr';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Dialog, DialogAction } from '../components/ui/Dialog';
-import { deviceService } from '../services/DeviceService';
-import { useAppStore } from '../stores/AppStore';
 
 function PressableCardEmergency({ onPress }: { onPress: () => void }) {
   return (
@@ -61,6 +59,9 @@ function MetricCard({
 }
 
 export interface WaiterScreenProps {
+  isConnected: boolean;
+  connectionSnapshot: { broker: string; deviceOnline: boolean; lastDeviceMessageAt: number | null; error: string | null } | null;
+  machineState: { isOn: boolean; status: 'idle' | 'preparing' | 'cleaning' | 'error'; errorMessage?: string; currentRecipeId?: string; activeStepId?: any; completedStepIds?: any[]; skippedStepIds?: any[]; isDrinkReady?: boolean };
   clearTableOrders: (tableNumber: number) => void;
   clearTableSession: (tableNumber: number) => void;
   onDeleteOrder: (order: DrinkOrder) => void;
@@ -71,9 +72,14 @@ export interface WaiterScreenProps {
   queuedOrdersCount: number;
   readyOrdersCount: number;
   sessions: TableSession[];
+  onPowerOn?: () => Promise<boolean>;
+  onEmergencyStop?: () => Promise<boolean>;
 }
 
 export function WaiterScreen({
+  isConnected,
+  connectionSnapshot,
+  machineState,
   clearTableOrders,
   clearTableSession,
   onDeleteOrder,
@@ -84,9 +90,10 @@ export function WaiterScreen({
   queuedOrdersCount,
   readyOrdersCount,
   sessions,
+  onPowerOn,
+  onEmergencyStop,
 }: WaiterScreenProps) {
   const { recipes } = useRecipeStore();
-  const { machineState, isConnected, connectionSnapshot } = useAppStore();
   const [dialogVisible, setDialogVisible] = useState(false);
   const [billingTable, setBillingTable] = useState<{
     tableNumber: number;
@@ -123,7 +130,14 @@ export function WaiterScreen({
           text: 'DETENER KRAKEN',
           variant: 'danger',
           onPress: async () => {
-            const success = await deviceService.sendCommand({ cmd: 'POWER', val: 'OFF', target: 'kraken' });
+            let success = false;
+            try {
+              if (onEmergencyStop) {
+                success = await onEmergencyStop();
+              }
+            } catch {
+              success = false;
+            }
             showCustomDialog(
               success ? 'Máquina detenida' : 'Confirmación no recibida',
               success
@@ -483,7 +497,12 @@ export function WaiterScreen({
                 variant="primary"
                 size="sm"
                 onPress={async () => {
-                  const success = await deviceService.sendCommand({ cmd: 'POWER', val: 'ON', target: 'kraken' });
+                  let success = false;
+                  try {
+                    if (onPowerOn) success = await onPowerOn();
+                  } catch {
+                    success = false;
+                  }
                   if (success) {
                     showCustomDialog(
                       'Maquina Encendida',

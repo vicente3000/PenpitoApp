@@ -7,11 +7,15 @@ import { AdminScreen, Esp32DeviceKey, Esp32WifiConfig } from '../src/screens/Adm
 import { AdminLoginScreen } from '../src/screens/AdminLoginScreen';
 import { useSettingsStore } from '../src/stores/SettingsStore';
 import { useInventoryStore } from '../src/stores/InventoryStore';
-import { useOrderStore } from '../src/stores/OrderStore';
-import { useAppStore } from '../src/stores/AppStore';
-import { useSessionStore } from '../src/stores/SessionStore';
-import { deviceService } from '../src/services/DeviceService';
-import { commandQueueService } from '../src/services/CommandQueueService';
+import { DrinkOrder } from '../src/models';
+import {
+  useAllTables,
+  useOrderActions,
+  useControllerConnection,
+  useControllerHardware,
+  useForceSnapshotOnConnect,
+} from '../src/hooks/useOrderStoreV2';
+import { useAdminController } from '../src/hooks/useAdminController';
 
 const defaultEsp32WifiConfig: Record<Esp32DeviceKey, Esp32WifiConfig> = {
   kraken: { ssid: '', password: '', mqttHost: '', mqttPort: '1883' },
@@ -24,8 +28,13 @@ export default function AdminRoute() {
     isLoading: inventoryLoading,
     refillBottle,
   } = useInventoryStore();
-  const { orders, markOrderServed } = useOrderStore();
-  const { isConnected, connectionSnapshot, machineState } = useAppStore();
+  const ordersByTable = useAllTables();
+  const { serveOrder, cancelOrder } = useOrderActions();
+  const { isConnected, snapshot: connectionSnapshot } = useControllerConnection();
+  const hardware = useControllerHardware();
+  const admin = useAdminController();
+
+  useForceSnapshotOnConnect();
 
   const [adminUnlocked, setAdminUnlocked] = useState(__DEV__);
   const [adminPassword, setAdminPassword] = useState('');
@@ -53,49 +62,6 @@ export default function AdminRoute() {
       setCarriagePositions(settings.carriage_positions || [3600, 2600, 800, 100, 1860, 1600, 1350, 1200]);
     }
   }, [settings]);
-
-  // Sincronizar todas las mesas (1-10) vía MQTT en la consola de administración
-  useEffect(() => {
-    const unsubs: (() => void)[] = [];
-
-    for (let tableNum = 1; tableNum <= 10; tableNum++) {
-      const unsubSession = deviceService.subscribeCustom(
-        `penpito/table/${tableNum}/session`,
-        (payload) => {
-          try {
-            const session = JSON.parse(payload);
-            useSessionStore.getState().syncSessionFromNetwork(tableNum, session);
-          } catch {
-            // ignore
-          }
-        }
-      );
-      if (unsubSession) unsubs.push(unsubSession);
-
-      const unsubOrders = deviceService.subscribeCustom(
-        `penpito/table/${tableNum}/orders`,
-        (payload) => {
-          try {
-            const parsedOrders = JSON.parse(payload);
-            void useOrderStore.getState().syncOrdersFromNetwork(tableNum, parsedOrders);
-          } catch {
-            // ignore
-          }
-        }
-      );
-      if (unsubOrders) unsubs.push(unsubOrders);
-
-      // Solicitar sincronización inicial
-      deviceService.publish(
-        `penpito/table/${tableNum}/request`,
-        JSON.stringify({ type: 'SYNC_REQUEST' })
-      );
-    }
-
-    return () => {
-      unsubs.forEach((unsub) => unsub());
-    };
-  }, []);
 
   const handleAdminLogin = () => {
     const expectedPassword = process.env.EXPO_PUBLIC_ADMIN_PASSWORD || 'admin123';
@@ -135,23 +101,17 @@ export default function AdminRoute() {
 
     await updateSettings(nextSettings);
 
-    // Sync calibrations with ESP32 via MQTT
     if (isConnected) {
-      void commandQueueService.enqueue({
-        cmd: 'SET_CALIB',
-        target: 'kraken',
-        rates: nextCalibs,
-        positions: nextPositions
-      } as any);
-    }
-
-    setSettingsFeedback('Parámetros guardados y sincronizados.');
-    setTimeout(() => setSettingsFeedback(''), 3000);
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      window.alert('Parámetros guardados y sincronizados.');
+      try {
+        await admin.setCalibration(nextCalibs, nextPositions);
+        setSettingsFeedback('Parámetros guardados y sincronizados con ESP32.');
+      } catch (err) {
+        setSettingsFeedback(`Guardado local. Error al sincronizar con ESP32: ${String(err)}`);
+      }
     } else {
-      Alert.alert('Éxito', 'Parámetros guardados y sincronizados.');
+      setSettingsFeedback('Parámetros guardados (ESP32 no conectado).');
     }
+    setTimeout(() => setSettingsFeedback(''), 4000);
   };
 
   const handleRefillBottle = async (bottleId: string) => {
@@ -172,21 +132,12 @@ export default function AdminRoute() {
     }
 
     setEsp32Feedback('Enviando configuración...');
-    const success = await deviceService.sendCommand({
-      cmd: 'CONFIG_WIFI',
-      val: deviceId,
-      target: deviceId,
-      ssid,
-      password: config.password,
-      mqttHost,
-      mqttPort,
-    });
-
-    setEsp32Feedback(
-      success
-        ? 'Configuración enviada correctamente.'
-        : 'Error al enviar la configuración.'
-    );
+    try {
+      await admin.configWifi(ssid, config.password, mqttHost, mqttPort);
+      setEsp32Feedback('Configuración enviada correctamente.');
+    } catch (err) {
+      setEsp32Feedback(`Error al enviar la configuración: ${String(err)}`);
+    }
     setTimeout(() => setEsp32Feedback(''), 4000);
   };
 
@@ -200,9 +151,30 @@ export default function AdminRoute() {
     }));
   };
 
+  // Aplanar orders para el panel
+  const orders = useMemo<DrinkOrder[]>(() => {
+    const out: DrinkOrder[] = [];
+    for (const list of ordersByTable.values()) out.push(...list);
+    return out;
+  }, [ordersByTable]);
+
   const preparingOrders = useMemo(() => orders.filter((o) => o.status === 'preparing'), [orders]);
   const readyOrders = useMemo(() => orders.filter((o) => o.status === 'ready'), [orders]);
   const servedOrdersCount = useMemo(() => orders.filter((o) => o.status === 'served').length, [orders]);
+
+  const machineState = useMemo(
+    () => ({
+      isOn: !!hardware?.isOn,
+      status: (hardware?.status ?? 'idle') as 'idle' | 'preparing' | 'cleaning' | 'error',
+      errorMessage: hardware?.errorMessage ?? undefined,
+      currentRecipeId: hardware?.activeOrderId ?? undefined,
+      activeStepId: hardware?.activeStepId as any,
+      completedStepIds: (hardware?.completedStepIds ?? []) as any,
+      skippedStepIds: (hardware?.skippedStepIds ?? []) as any,
+      isDrinkReady: !!hardware?.isDrinkReady,
+    }),
+    [hardware]
+  );
 
   if (settingsLoading || inventoryLoading) {
     return (
@@ -232,11 +204,27 @@ export default function AdminRoute() {
           iceDispenseTimeS={iceDispenseTimeS}
           inventory={inventory}
           isConnected={isConnected}
-          connectionSnapshot={connectionSnapshot}
-          machineState={machineState}
+          connectionSnapshot={connectionSnapshot as any}
+          machineState={machineState as any}
           settings={settings}
           onBack={() => router.replace('/')}
-          onMarkServed={(id) => void markOrderServed(id)}
+          onMarkServed={(id) => {
+            for (const [tableId, list] of ordersByTable) {
+              if (list.some((o) => o.id === id)) {
+                void serveOrder(tableId, id);
+                return;
+              }
+            }
+          }}
+          onDeleteOrder={(id) => {
+            for (const [tableId, list] of ordersByTable) {
+              const o = list.find((x) => x.id === id);
+              if (o) {
+                void cancelOrder(tableId, id);
+                return;
+              }
+            }
+          }}
           onRefillBottle={handleRefillBottle}
           onSaveSettings={handleSaveSettings}
           orders={orders}
@@ -252,6 +240,50 @@ export default function AdminRoute() {
           esp32Feedback={esp32Feedback}
           setEsp32ConfigValue={setEsp32ConfigValue}
           onSendEsp32Config={handleSendEsp32Config}
+          onTestPumpCalib={async (pumpIdx: number) => {
+            const pumpNum = pumpIdx + 1;
+            try {
+              await admin.sendTestMotorAbs(getPumpPosition(pumpNum));
+              await sleep(2500);
+              await admin.sendTestPump(pumpNum, 10_000);
+              return true;
+            } catch {
+              return false;
+            }
+          }}
+          onSendTestHw={async (payload) => admin.testHardware(payload as any)}
+          onPowerOn={async () => {
+            try {
+              const ack = await admin.powerOn();
+              return ack.accepted;
+            } catch {
+              return false;
+            }
+          }}
+          onPowerOff={async () => {
+            try {
+              const ack = await admin.powerOff();
+              return ack.accepted;
+            } catch {
+              return false;
+            }
+          }}
+          onClean={async () => {
+            try {
+              const ack = await admin.clean();
+              return ack.accepted;
+            } catch {
+              return false;
+            }
+          }}
+          onEmergencyStop={async () => {
+            try {
+              const ack = await admin.emergencyStop();
+              return ack.accepted;
+            } catch {
+              return false;
+            }
+          }}
           pumpCalibrations={pumpCalibrations}
           setPumpCalibrations={setPumpCalibrations}
           carriagePositions={carriagePositions}
@@ -260,6 +292,18 @@ export default function AdminRoute() {
       )}
     </SafeAreaView>
   );
+}
+
+function getPumpPosition(pumpNum: number): number {
+  if (pumpNum === 1 || pumpNum === 2) return 1860;
+  if (pumpNum === 3 || pumpNum === 4) return 1600;
+  if (pumpNum === 5 || pumpNum === 6) return 1350;
+  if (pumpNum === 7) return 1200;
+  return 1860;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const styles = StyleSheet.create({

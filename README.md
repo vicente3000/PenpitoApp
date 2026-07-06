@@ -94,7 +94,7 @@ Cada tipo de QR abre un flujo distinto:
 
 ## Comunicacion con Kraken
 
-La app usa por defecto `KrakenMqttAdapter` y se comunica mediante Mosquitto:
+La app usa `KrakenMqttAdapter` y se comunica mediante Mosquitto:
 
 ```ts
 export const deviceService = new DeviceService(new KrakenMqttAdapter());
@@ -106,35 +106,26 @@ Flujo esperado:
 App movil -- MQTT por WebSocket --> Mosquitto -- MQTT TCP --> ESP32
 ```
 
-Topics generales usados:
+Topics generales:
 
 - `penpito/kraken/state`: estado publicado por el ESP32.
 - `penpito/kraken/command`: comandos `POWER`, `PREPARE` y `CLEAN`.
 - `penpito/kraken/command/ack`: confirmacion de comandos.
+- `penpito/kraken/presence`: presencia `online` del ESP32.
+- `penpito/kraken/request_state`: la app pide al ESP32 re-publicar el estado tras reconectar.
 
 Topics por placa para configuracion:
 
 - `penpito/pumps/command`: configuracion del ESP32 de bombas.
 - `penpito/motor/command`: configuracion del ESP32 del motor.
 - `penpito/pumps/command/ack` y `penpito/motor/command/ack`: confirmacion.
+- `penpito/pumps/state` y `penpito/motor/state`: estado por placa.
 
 La app se conecta por WebSocket al broker:
 
 ```bash
 EXPO_PUBLIC_MQTT_WS_URL=ws://IP_DEL_BROKER:9001
 ```
-
-El ESP32 se conecta por MQTT TCP. Para subir el firmware a cada placa, cambia en `Codigo esp32 probar/src/main.cpp`:
-
-```cpp
-const char* DEVICE_ID = "pumps"; // "pumps" para bombas, "motor" para motor
-const char* DEFAULT_WIFI_SSID = "TU_WIFI";
-const char* DEFAULT_WIFI_PASSWORD = "TU_CLAVE_WIFI";
-const char* DEFAULT_MQTT_HOST = "IP_DEL_BROKER";
-const uint16_t DEFAULT_MQTT_PORT = 1883;
-```
-
-Despues, desde la pagina de administrador de la app puedes enviar nuevos datos de WiFi/MQTT a cada ESP32. El ESP32 guarda esos datos en memoria NVS y reinicia para entrar a la nueva red.
 
 Mosquitto debe tener un listener TCP para el ESP32 y uno WebSocket para la app:
 
@@ -147,28 +138,28 @@ protocol websockets
 allow_anonymous true
 ```
 
-El adaptador simulado sigue disponible en `src/adapters/MockAdapter.ts` para desarrollo sin hardware. Para usarlo, cambia la instancia exportada en `src/services/DeviceService.ts`.
-
-## Firmware ESP32
+## Firmware ESP32 (Kraken)
 
 El firmware del ESP32 esta en:
 
 ```bash
-Codigo esp32 probar/
+Kraken/
 ```
 
-Es un proyecto PlatformIO para la placa `esp32dev`, con framework Arduino y dependencias `ESP32Servo`, `ArduinoJson` y `PubSubClient`.
+Es un proyecto PlatformIO para la placa `esp32dev`, con framework Arduino. Configura el dispositivo editando los defines en `Kraken/src/main.cpp` (SSID, clave WiFi, broker MQTT y `DEVICE_ID`).
 
 Comandos basicos:
 
 ```bash
-cd "Codigo esp32 probar"
+cd Kraken
 pio run
 pio run --target upload
 pio device monitor
 ```
 
-Si usas la extension de PlatformIO en VS Code, abre la carpeta `Codigo esp32 probar/` y usa las acciones de build, upload y monitor desde la barra de PlatformIO.
+Si usas la extension de PlatformIO en VS Code, abre la carpeta `Kraken/` y usa las acciones de build, upload y monitor desde la barra de PlatformIO.
+
+Desde la pagina de administrador de la app puedes enviar nuevos datos de WiFi/MQTT al ESP32. El ESP32 guarda esos datos en memoria NVS y reinicia para entrar a la nueva red.
 
 ## Estructura del proyecto
 
@@ -176,14 +167,13 @@ Si usas la extension de PlatformIO en VS Code, abre la carpeta `Codigo esp32 pro
 - `src/screens/`: pantalla principal y flujos de mesa, mesero y administrador.
 - `src/components/`: componentes propios, como la linea de tiempo de preparacion.
 - `src/services/`: servicios de comunicacion y cola de comandos.
-- `src/adapters/`: adaptadores de comunicacion MQTT, HTTP legado y simulado.
+- `src/adapters/`: adaptador de comunicacion MQTT con Mosquitto.
 - `src/repositories/`: persistencia local de recetas, pedidos, inventario y ajustes.
 - `src/stores/`: estado global con Zustand.
 - `src/models/`: tipos principales de recetas, pedidos, maquina, sesiones y ajustes.
 - `src/utils/`: utilidades para QR, preparacion y configuracion de tragos.
 - `assets/`: imagenes, iconos y fuentes.
-- `Codigo esp32 probar/`: firmware ESP32 con PlatformIO.
-- `docs/`: documentos del proyecto.
+- `Kraken/`: firmware ESP32 con PlatformIO.
 
 ## Problemas comunes
 
@@ -205,6 +195,15 @@ npx expo start -c
 
 Verifica que el telefono, el broker Mosquitto y el ESP32 esten en la misma red.
 
+Si la app muestra "ESP32 online" sin que el hardware este conectado, puede ser que el broker tenga mensajes retenidos de una sesion anterior. Limpialos antes de empezar:
+
+```bash
+mosquitto_pub -h IP_DEL_BROKER -p 1883 -t penpito/kraken/state -r -n
+mosquitto_pub -h IP_DEL_BROKER -p 1883 -t penpito/kraken/presence -r -n
+```
+
+La app tambien aplica un chequeo de "freshness" de 15 segundos: si no llega ningun mensaje nuevo del ESP en ese tiempo, lo marca como offline aunque haya retained messages.
+
 Si Mosquitto usa otra IP o puerto WebSocket, inicia Expo con:
 
 ```bash
@@ -215,13 +214,6 @@ En PowerShell puedes hacerlo asi:
 
 ```powershell
 $env:EXPO_PUBLIC_MQTT_WS_URL='ws://IP_DEL_BROKER:9001'
-npm start
-```
-
-Para abrir directo la vista de administrador durante pruebas, sin QR ni contrasena:
-
-```powershell
-$env:EXPO_PUBLIC_ADMIN_TEST_MODE='true'
 npm start
 ```
 

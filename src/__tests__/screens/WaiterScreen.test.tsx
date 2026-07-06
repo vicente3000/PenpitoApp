@@ -2,24 +2,11 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react-native';
 import { WaiterScreen, WaiterScreenProps } from '../../screens/WaiterScreen';
 import { useRecipeStore } from '../../stores/RecipeStore';
-import { useAppStore } from '../../stores/AppStore';
-import { deviceService } from '../../services/DeviceService';
 import { DrinkOrder, TableSession } from '../../models';
 
 // Mockear stores
 jest.mock('../../stores/RecipeStore', () => ({
   useRecipeStore: jest.fn(),
-}));
-
-jest.mock('../../stores/AppStore', () => ({
-  useAppStore: jest.fn(),
-}));
-
-jest.mock('../../services/DeviceService', () => ({
-  deviceService: {
-    publish: jest.fn(),
-    sendCommand: jest.fn().mockResolvedValue(true),
-  },
 }));
 
 describe('WaiterScreen Component', () => {
@@ -85,6 +72,9 @@ describe('WaiterScreen Component', () => {
   ordersByTable.set(1, mockOrders);
 
   const defaultProps: WaiterScreenProps = {
+    isConnected: true,
+    connectionSnapshot: { broker: 'connected', deviceOnline: true, lastDeviceMessageAt: Date.now(), error: null },
+    machineState: { status: 'idle', isDrinkReady: false, isOn: true },
     clearTableOrders: mockClearTableOrders,
     clearTableSession: mockClearTableSession,
     onDeleteOrder: mockOnDeleteOrder,
@@ -95,6 +85,8 @@ describe('WaiterScreen Component', () => {
     queuedOrdersCount: 1,
     readyOrdersCount: 1,
     sessions: mockSessions,
+    onPowerOn: jest.fn().mockResolvedValue(true),
+    onEmergencyStop: jest.fn().mockResolvedValue(true),
   };
 
   beforeEach(() => {
@@ -102,12 +94,6 @@ describe('WaiterScreen Component', () => {
 
     (useRecipeStore as unknown as jest.Mock).mockReturnValue({
       recipes: mockRecipes,
-    });
-
-    (useAppStore as unknown as jest.Mock).mockReturnValue({
-      machineState: { status: 'idle', isDrinkReady: false, isOn: true },
-      isConnected: true,
-      connectionSnapshot: { broker: 'connected', deviceOnline: true, lastDeviceMessageAt: Date.now(), error: null },
     });
   });
 
@@ -135,11 +121,7 @@ describe('WaiterScreen Component', () => {
     const confirmarButton = await screen.findByText('DETENER KRAKEN');
     fireEvent.press(confirmarButton);
 
-    expect(deviceService.sendCommand).toHaveBeenCalledWith({
-      cmd: 'POWER',
-      val: 'OFF',
-      target: 'kraken',
-    });
+    expect(defaultProps.onEmergencyStop).toHaveBeenCalled();
   });
 
   it('should render list of tables with guest count and order list', async () => {

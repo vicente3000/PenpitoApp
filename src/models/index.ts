@@ -94,6 +94,8 @@ export interface DrinkOrder {
   guest_name?: string;
   group_id?: string;
   split_method?: BillSplitMethod;
+  order_index?: number;
+  ready_since?: number;
 }
 
 export interface PreparationRecord {
@@ -116,6 +118,7 @@ export interface SessionGuest {
   id: string;
   name: string;
   joined_at: number;
+  device_id?: string;
 }
 
 export interface TableSession {

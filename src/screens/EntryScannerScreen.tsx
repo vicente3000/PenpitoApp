@@ -19,8 +19,6 @@ import { parseAccessQr } from '../utils/tableQr';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { resetDatabase } from '../repositories/LocalDatabase';
-import { inventoryRepository } from '../repositories/InventoryRepository';
-import { deviceService } from '../services/DeviceService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSessionStore } from '../stores/SessionStore';
 import { useInventoryStore } from '../stores/InventoryStore';
@@ -47,19 +45,12 @@ export function EntryScannerScreen({ onResolved }: EntryScannerScreenProps) {
       await resetDatabase();
       await AsyncStorage.removeItem('penpito.table.sessions');
       await AsyncStorage.removeItem('penpito.device.guestName');
+      await AsyncStorage.removeItem('penpito.device.tableNumber');
       await useSessionStore.getState().loadSessions();
       await useInventoryStore.getState().loadInventory();
       await useOrderStore.getState().loadOrders();
 
-      const remoteInventory = await inventoryRepository.getAllBottles();
-      deviceService.publish('penpito/inventory/state', JSON.stringify(remoteInventory));
-      
-      for (let i = 1; i <= 10; i++) {
-        deviceService.publish(`penpito/table/${i}/orders`, '[]');
-        deviceService.publish(`penpito/table/${i}/session`, '{}');
-      }
-
-      setScanError('¡Éxito! Base de datos reiniciada y stock al 100% sincronizado en red.');
+      setScanError('¡Éxito! Base de datos reiniciada y stock al 100%.');
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       setScanError(`Error al reiniciar: ${errMsg}`);
@@ -240,7 +231,9 @@ const styles = StyleSheet.create({
   },
   heroLogo: {
     width: '100%',
+    minWidth: '100%',
     height: 180,
+    alignSelf: 'stretch',
   },
   sectionCard: {
     marginBottom: 16,

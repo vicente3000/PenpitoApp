@@ -4,91 +4,93 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Colors } from '../src/constants/Colors';
 import { WaiterScreen } from '../src/screens/WaiterScreen';
-import { useOrderStore } from '../src/stores/OrderStore';
 import { useSessionStore } from '../src/stores/SessionStore';
 import { DrinkOrder } from '../src/models';
-import { deviceService } from '../src/services/DeviceService';
+import {
+  useAllTables,
+  useOrderActions,
+  useControllerConnection,
+  useControllerHardware,
+  useForceSnapshotOnConnect,
+} from '../src/hooks/useOrderStoreV2';
+import { useAdminController } from '../src/hooks/useAdminController';
 
 export default function WaiterRoute() {
-  const {
-    orders,
-    deleteOrder,
-    markOrderServed,
-    clearTableOrders,
-  } = useOrderStore();
-  
+  const ordersByTable = useAllTables();
+  const { serveOrder, cancelOrder } = useOrderActions();
+  const { isConnected, snapshot: connectionSnapshot } = useControllerConnection();
+  const hardware = useControllerHardware();
+  const admin = useAdminController();
+
+  useForceSnapshotOnConnect();
+
   const {
     sessions,
     removeGuestFromTable,
     clearTableSession,
   } = useSessionStore();
 
-  // Sincronizar todas las mesas (1-10) vía MQTT en la consola del mesero
-  useEffect(() => {
-    const unsubs: (() => void)[] = [];
-
-    for (let tableNum = 1; tableNum <= 10; tableNum++) {
-      const unsubSession = deviceService.subscribeCustom(
-        `penpito/table/${tableNum}/session`,
-        (payload) => {
-          try {
-            const session = JSON.parse(payload);
-            useSessionStore.getState().syncSessionFromNetwork(tableNum, session);
-          } catch {
-            // ignore
-          }
-        }
-      );
-      if (unsubSession) unsubs.push(unsubSession);
-
-      const unsubOrders = deviceService.subscribeCustom(
-        `penpito/table/${tableNum}/orders`,
-        (payload) => {
-          try {
-            const parsedOrders = JSON.parse(payload);
-            void useOrderStore.getState().syncOrdersFromNetwork(tableNum, parsedOrders);
-          } catch {
-            // ignore
-          }
-        }
-      );
-      if (unsubOrders) unsubs.push(unsubOrders);
-
-      // Solicitar sincronización inicial
-      deviceService.publish(
-        `penpito/table/${tableNum}/request`,
-        JSON.stringify({ type: 'SYNC_REQUEST' })
-      );
+  // En la nueva arquitectura, "cobrar mesa" se hace limpiando las sesiones
+  // locales y avisando al controller. El controller no maneja sesiones
+  // (es responsabilidad de la app), así que lo manejamos aquí.
+  const clearTableOrders = (tableNumber: number) => {
+    const tableOrders = ordersByTable.get(tableNumber) ?? [];
+    for (const order of tableOrders) {
+      if (order.status === 'queued' || order.status === 'failed') {
+        void cancelOrder(tableNumber, order.id);
+      }
     }
+  };
 
-    return () => {
-      unsubs.forEach((unsub) => unsub());
-    };
-  }, []);
+  // Para la métrica global necesitamos aplanar la lista.
+  const allOrders = useMemo(() => {
+    const out: DrinkOrder[] = [];
+    for (const list of ordersByTable.values()) out.push(...list);
+    return out;
+  }, [ordersByTable]);
 
-  const queuedOrders = useMemo(() => orders.filter((o) => o.status === 'queued'), [orders]);
-  const readyOrders = useMemo(() => orders.filter((o) => o.status === 'ready'), [orders]);
+  const queuedOrdersCount = useMemo(() => allOrders.filter((o) => o.status === 'queued').length, [allOrders]);
+  const readyOrdersCount = useMemo(() => allOrders.filter((o) => o.status === 'ready').length, [allOrders]);
 
-  const ordersByTable = useMemo(() => {
-    const map = new Map<number, DrinkOrder[]>();
-    orders.forEach((o) => {
-      const list = map.get(o.table_number) ?? [];
-      list.push(o);
-      map.set(o.table_number, list);
-    });
-    return map;
-  }, [orders]);
+  // Adaptar el snapshot al tipo legacy que WaiterScreen espera.
+  const legacyConnectionSnapshot = useMemo(
+    () => ({
+      broker: connectionSnapshot.broker,
+      deviceOnline: connectionSnapshot.deviceOnline,
+      lastDeviceMessageAt: connectionSnapshot.lastDeviceMessageAt,
+      error: connectionSnapshot.error,
+    }),
+    [connectionSnapshot]
+  );
+
+  const machineState = useMemo(
+    () => ({
+      isOn: !!hardware?.isOn,
+      status: (hardware?.status ?? 'idle') as 'idle' | 'preparing' | 'cleaning' | 'error',
+      errorMessage: hardware?.errorMessage ?? undefined,
+      currentRecipeId: hardware?.activeOrderId ?? undefined,
+      activeStepId: hardware?.activeStepId as any,
+      completedStepIds: (hardware?.completedStepIds ?? []) as any,
+      skippedStepIds: (hardware?.skippedStepIds ?? []) as any,
+      isDrinkReady: !!hardware?.isDrinkReady,
+    }),
+    [hardware]
+  );
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <WaiterScreen
-        clearTableOrders={clearTableOrders}
-        clearTableSession={clearTableSession}
-        onDeleteOrder={(order) => {
-          void deleteOrder(order.id);
-        }}
+        isConnected={isConnected}
+        connectionSnapshot={legacyConnectionSnapshot as any}
+        machineState={machineState as any}
         onMarkServed={(id) => {
-          void markOrderServed(id);
+          // Encontrar la mesa del pedido
+          for (const [tableId, list] of ordersByTable) {
+            if (list.some((o) => o.id === id)) {
+              void serveOrder(tableId, id);
+              return;
+            }
+          }
         }}
         onRemoveGuest={(tableNum, guest) => {
           removeGuestFromTable(tableNum, guest.id);
@@ -96,9 +98,30 @@ export default function WaiterRoute() {
         onResetAccess={() => {
           router.replace('/');
         }}
+        onDeleteOrder={(order) => {
+          void cancelOrder(order.table_number, order.id);
+        }}
+        onPowerOn={async () => {
+          try {
+            const ack = await admin.powerOn();
+            return ack.accepted;
+          } catch {
+            return false;
+          }
+        }}
+        onEmergencyStop={async () => {
+          try {
+            const ack = await admin.emergencyStop();
+            return ack.accepted;
+          } catch {
+            return false;
+          }
+        }}
+        clearTableSession={clearTableSession}
+        clearTableOrders={clearTableOrders}
         ordersByTable={ordersByTable}
-        queuedOrdersCount={queuedOrders.length}
-        readyOrdersCount={readyOrders.length}
+        queuedOrdersCount={queuedOrdersCount}
+        readyOrdersCount={readyOrdersCount}
         sessions={sessions}
       />
     </SafeAreaView>

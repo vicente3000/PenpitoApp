@@ -1,0 +1,45 @@
+{
+  "protocolVersion": 2,
+  "topics": {
+    "mobileOrderSubmit": "penpito/v2/mobile/table/{tableId}/order/submit",
+    "mobileOrderCancel": "penpito/v2/mobile/table/{tableId}/order/cancel",
+    "mobileOrderServed": "penpito/v2/mobile/table/{tableId}/order/served",
+    "mobileQueueRequest": "penpito/v2/mobile/table/{tableId}/queue/request",
+    "mobileHardwareRequest": "penpito/v2/mobile/hardware/request",
+    "mobileAdminCommand": "penpito/v2/mobile/admin/command",
+    "controllerAdminResult": "penpito/v2/controller/admin/result",
+    "controllerQueueState": "penpito/v2/controller/table/{tableId}/queue",
+    "controllerOrderEvent": "penpito/v2/controller/table/{tableId}/event",
+    "controllerHardwareState": "penpito/v2/controller/hardware/state",
+    "controllerHardwareCommand": "penpito/v2/controller/hardware/command",
+    "hardwareCommandAck": "penpito/v2/hardware/command/ack",
+    "hardwareState": "penpito/v2/hardware/state",
+    "hardwareEvent": "penpito/v2/hardware/event",
+    "hardwarePresence": "penpito/v2/hardware/presence",
+    "diagnosticsPing": "penpito/v2/diagnostics/ping"
+  },
+  "subscribePatterns": {
+    "allMobileOrders": "penpito/v2/mobile/table/+/order/submit",
+    "allMobileCancels": "penpito/v2/mobile/table/+/order/cancel",
+    "allMobileServed": "penpito/v2/mobile/table/+/order/served",
+    "allQueueRequests": "penpito/v2/mobile/table/+/queue/request",
+    "allHardwareRequests": "penpito/v2/mobile/hardware/request",
+    "allAdminCommands": "penpito/v2/mobile/admin/command",
+    "allAdminResults": "penpito/v2/controller/admin/result",
+    "hardwareAck": "penpito/v2/hardware/command/ack",
+    "hardwareState": "penpito/v2/hardware/state",
+    "hardwareEvent": "penpito/v2/hardware/event",
+    "hardwarePresence": "penpito/v2/hardware/presence"
+  },
+  "qos": {
+    "commands": 1,
+    "state": 1,
+    "events": 1,
+    "presence": 1
+  },
+  "retain": {
+    "state": true,
+    "presence": true,
+    "queueSnapshot": true
+  }
+}

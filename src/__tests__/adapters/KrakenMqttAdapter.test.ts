@@ -107,6 +107,42 @@ describe('KrakenMqttAdapter', () => {
       const success = await sendPromise;
       expect(success).toBe(true);
     });
+
+    it('should format QoS 1 PUBLISH packets with topic name before packet identifier according to MQTT 3.1.1 spec', async () => {
+      const connectPromise = adapter.connect();
+      // @ts-ignore
+      const socketInstance = global.WebSocket.mockInstances[0];
+      socketInstance.onmessage({ data: new Uint8Array([0x20, 0x02, 0x00, 0x00]).buffer });
+      await connectPromise;
+
+      const command: DeviceCommand = { cmd: 'PREPARE', val: 'negroni' };
+      void adapter.sendCommand(command);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const sentPackets = socketInstance.send.mock.calls;
+      let qos1Packet: Uint8Array | null = null;
+      for (const call of sentPackets) {
+        const bytes = call[0] as Uint8Array;
+        if (bytes[0] === 0x32) { // PUBLISH QoS 1
+          qos1Packet = bytes;
+          break;
+        }
+      }
+
+      expect(qos1Packet).not.toBeNull();
+      if (qos1Packet) {
+        // En MQTT 3.1.1, después del header y remaining length, los primeros 2 bytes del variable header son la longitud del topic
+        const topicLen = (qos1Packet[2] << 8) | qos1Packet[3];
+        const topicBytes = qos1Packet.slice(4, 4 + topicLen);
+        const topicStr = new TextDecoder().decode(topicBytes);
+        expect(topicStr).toBe('penpito/kraken/command');
+        // Los siguientes 2 bytes son el Packet Identifier
+        const packetId = (qos1Packet[4 + topicLen] << 8) | qos1Packet[5 + topicLen];
+        expect(typeof packetId).toBe('number');
+        expect(packetId).toBeGreaterThan(0);
+      }
+    });
   });
 
   describe('state change notifications', () => {
@@ -130,6 +166,49 @@ describe('KrakenMqttAdapter', () => {
 
       expect(stateCallback).toHaveBeenCalledTimes(2); // Una vez al registrarse (onStateChange llama a fireStateChange) y otra al recibir el mensaje
       expect(stateCallback).toHaveBeenLastCalledWith(nextState);
+    });
+  });
+
+  describe('presence (LWT retained)', () => {
+    it('should mark device offline on retained LWT payload "offline"', () => {
+      const cb = jest.fn();
+      adapter.onConnectionChange(cb);
+
+      // @ts-ignore
+      adapter.handleMessage('penpito/kraken/presence', 'offline', true);
+
+      const lastSnapshot = cb.mock.calls.at(-1)?.[0];
+      expect(lastSnapshot.deviceOnline).toBe(false);
+      expect(lastSnapshot.lastDeviceMessageAt).toBeNull();
+    });
+
+    it('should mark device online on retained payload "online"', () => {
+      const cb = jest.fn();
+      adapter.onConnectionChange(cb);
+
+      // @ts-ignore
+      adapter.handleMessage('penpito/kraken/presence', 'online', true);
+
+      const lastSnapshot = cb.mock.calls.at(-1)?.[0];
+      expect(lastSnapshot.deviceOnline).toBe(true);
+      expect(typeof lastSnapshot.lastDeviceMessageAt).toBe('number');
+    });
+
+    it('should not mutate MachineState.status when broker connection fails', async () => {
+      const stateCb = jest.fn();
+      adapter.onStateChange(stateCb);
+      const initialStatus = stateCb.mock.calls[0][0].status;
+
+      const connectPromise = adapter.connect();
+      // @ts-ignore
+      const socketInstance = global.WebSocket.mockInstances[0];
+      socketInstance.onerror();
+      socketInstance.onclose();
+      await connectPromise;
+
+      // La app no deberia reportar que la maquina entro en 'error'.
+      const lastState = stateCb.mock.calls.at(-1)?.[0];
+      expect(lastState.status).toBe(initialStatus);
     });
   });
 });

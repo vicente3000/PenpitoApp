@@ -7,12 +7,16 @@ import { UserPortalScreen } from '../../src/screens/UserPortalScreen';
 import { useRecipeStore } from '../../src/stores/RecipeStore';
 import { useInventoryStore } from '../../src/stores/InventoryStore';
 import { useSettingsStore } from '../../src/stores/SettingsStore';
-import { useOrderStore } from '../../src/stores/OrderStore';
 import { useSessionStore } from '../../src/stores/SessionStore';
 import { Recipe, DrinkPreparationOptions, PiscolaIntensity } from '../../src/models';
 import { getRecipeDefaultOptions, getRecipeUsageMl } from '../../src/utils/drinkConfig';
 import { Button } from '../../src/components/ui/Button';
 import { Dialog, DialogAction } from '../../src/components/ui/Dialog';
+import { getDeviceId } from '../../src/services/DeviceIdentityService';
+import {
+  useTableOrders,
+  useOrderActions,
+} from '../../src/hooks/useOrderStoreV2';
 
 export default function TableRoute() {
   const { tableNumber: tableNumberParam } = useLocalSearchParams();
@@ -22,7 +26,8 @@ export default function TableRoute() {
   const { recipes } = useRecipeStore();
   const { inventory, recipeIsAvailable } = useInventoryStore();
   const { settings } = useSettingsStore();
-  const { orders, createOrderBatch, deleteOrder } = useOrderStore();
+  const orders = useTableOrders(tableNumber);
+  const { submitOrder, cancelOrder } = useOrderActions();
   const {
     sessions,
     ensureTableSession,
@@ -69,16 +74,34 @@ export default function TableRoute() {
 
     if (deviceGuestName) {
       const cleanName = deviceGuestName.trim();
-      const existingGuest = session.guests.find(
+      const deviceId = useSessionStore.getState().deviceId;
+
+      const existingByDevice = deviceId
+        ? session.guests.find((g) => g.device_id === deviceId)
+        : undefined;
+
+      if (existingByDevice) {
+        setCurrentGuestId(existingByDevice.id);
+        setGuestNameInput(existingByDevice.name);
+        return;
+      }
+
+      const existingByName = session.guests.find(
         (g) => g.name.trim().toLowerCase() === cleanName.toLowerCase()
       );
-      if (existingGuest) {
-        setCurrentGuestId(existingGuest.id);
-        setGuestNameInput(existingGuest.name);
+
+      if (existingByName && !existingByName.device_id) {
+        setCurrentGuestId(existingByName.id);
+        setGuestNameInput(existingByName.name);
+      } else if (!existingByName) {
+        void (async () => {
+          const guest = await joinTable(tableNumber, sessionQr, cleanName);
+          setCurrentGuestId(guest.id);
+          setGuestNameInput(guest.name);
+        })();
       } else {
-        const guest = joinTable(tableNumber, sessionQr, cleanName);
-        setCurrentGuestId(guest.id);
-        setGuestNameInput(guest.name);
+        setCurrentGuestId(null);
+        setGuestNameInput('');
       }
     } else {
       setCurrentGuestId(null);
@@ -110,7 +133,7 @@ export default function TableRoute() {
     }
   }, [sessionExists, deviceGuestName, wasOnThisTable]);
 
-  const handleJoinTable = () => {
+  const handleJoinTable = async () => {
     if (!guestNameInput.trim()) {
       showCustomDialog('Nombre requerido', 'Por favor ingresa tu nombre.', [
         { text: 'Aceptar', variant: 'primary' }
@@ -118,7 +141,7 @@ export default function TableRoute() {
       return;
     }
     const session = ensureTableSession(tableNumber, `PENPITO:MESA:${String(tableNumber).padStart(2, '0')}`);
-    const guest = joinTable(tableNumber, session.qr_value, guestNameInput);
+    const guest = await joinTable(tableNumber, session.qr_value, guestNameInput);
     setCurrentGuestId(guest.id);
     void setDeviceGuestName(guest.name);
     void setDeviceTableNumber(tableNumber);
@@ -214,18 +237,23 @@ export default function TableRoute() {
             if (submittingRef.current) return;
             submittingRef.current = true;
             try {
-              await createOrderBatch({
-                items: cart.map((item) => ({
-                  recipe: item.recipe,
-                  options: item.options,
-                  quantity: item.quantity,
-                  guest_name: currentGuest.name,
-                })),
-                table_number: tableNumber,
-                qr_value: `PENPITO:MESA:${String(tableNumber).padStart(2, '0')}`,
-                split_method: activeTableSession.split_method,
-                group_id: `table-${tableNumber}-${Date.now()}`,
-              });
+              const groupId = `table-${tableNumber}-${Date.now()}`;
+              for (const item of cart) {
+                for (let q = 0; q < item.quantity; q++) {
+                  await submitOrder({
+                    tableId: tableNumber,
+                    recipeId: item.recipe.id,
+                    guestName: currentGuest.name,
+                    groupId,
+                    options: {
+                      iceCount: item.options.iceCount ?? 0,
+                      alcoholOz: item.options.alcoholOz,
+                      mixerOz: item.options.mixerOz,
+                      piscolaIntensity: item.options.piscolaIntensity,
+                    },
+                  });
+                }
+              }
 
               setCart([]);
               setTimeout(() => {
@@ -233,6 +261,10 @@ export default function TableRoute() {
                   { text: 'Aceptar', variant: 'primary' }
                 ]);
               }, 500);
+            } catch (err) {
+              showCustomDialog('Error al enviar', String(err), [
+                { text: 'Aceptar', variant: 'outline' }
+              ]);
             } finally {
               submittingRef.current = false;
             }
@@ -261,7 +293,7 @@ export default function TableRoute() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <UserPortalScreen
-        activeOrders={orders.filter((o) => o.table_number === tableNumber)}
+        activeOrders={orders}
         cart={cart}
         currentGuestName={currentGuestName}
         guestNameInput={guestNameInput}
@@ -285,7 +317,9 @@ export default function TableRoute() {
         }}
         onStartNewGuest={handleStartNewGuest}
         onSubmitCart={handleSubmitCart}
-        onDeleteQueuedOrder={(order) => deleteOrder(order.id)}
+        onDeleteQueuedOrder={(order) => {
+          void cancelOrder(tableNumber, order.id);
+        }}
         onChangeGuestName={handleChangeGuestName}
         onRequestBill={(requested) => useSessionStore.getState().requestBill(tableNumber, requested)}
         recipeAvailability={(recipe) =>

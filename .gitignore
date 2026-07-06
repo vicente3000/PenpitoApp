@@ -25,6 +25,8 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+debug-android.bundle
+debug-android.map
 
 # macOS
 .DS_Store
@@ -40,10 +42,13 @@ yarn-error.*
 /ios
 /android
 
-# ESP-IDF
+# PlatformIO / ESP-IDF
+/Kraken/.cache
+/Kraken/.pio
 /firmware/build/
 /firmware/sdkconfig
 /firmware/dependencies.lock
+
+# internal tooling
 /.agents
-/Kraken/.cache
 .env

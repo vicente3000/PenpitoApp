@@ -18,7 +18,6 @@ import {
   Recipe,
   TableSession,
 } from '../models';
-import { useMqttSync } from '../hooks/useMqttSync';
 import {
   buildCartItemLabel,
   formatCurrency,
@@ -99,9 +98,6 @@ export function UserPortalScreen({
   piscolaIntensity,
   tableNumber,
 }: UserPortalProps) {
-  // Sync state via custom hook
-  useMqttSync(tableNumber);
-
   // Custom modal dialog state
   const [dialogVisible, setDialogVisible] = useState(false);
   const [dialogConfig, setDialogConfig] = useState({

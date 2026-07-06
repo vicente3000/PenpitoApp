@@ -4,6 +4,7 @@ import { BottleInventory, DrinkPreparationOptions, Recipe } from '../models';
 import { inventoryRepository } from '../repositories/InventoryRepository';
 import { canPrepareRecipe, getInventoryShortage, getRecipeUsageMl } from '../utils/drinkConfig';
 import { deviceService } from '../services/DeviceService';
+import { parseBottleInventoryArray } from '../adapters/payloadParsers';
 
 interface InventoryState {
   inventory: BottleInventory[];
@@ -50,17 +51,28 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
       if (!get().isSubscribed) {
         set({ isSubscribed: true });
         deviceService.subscribeCustom('penpito/inventory/state', async (payload) => {
+          let raw: unknown;
           try {
-            const remoteInventory = JSON.parse(payload) as BottleInventory[];
-            if (Array.isArray(remoteInventory) && remoteInventory.length > 0) {
-              for (const remoteBottle of remoteInventory) {
+            raw = JSON.parse(payload);
+          } catch (e) {
+            console.warn('[InventoryStore] Payload de inventario no es JSON valido:', e);
+            return;
+          }
+          const remoteInventory = parseBottleInventoryArray(raw);
+          if (remoteInventory.length > 0) {
+            for (const remoteBottle of remoteInventory) {
+              try {
                 await inventoryRepository.saveBottle(remoteBottle);
+              } catch (e) {
+                console.warn('[InventoryStore] No se pudo guardar botella remota:', e);
               }
+            }
+            try {
               const localInventory = await inventoryRepository.getAllBottles();
               set({ inventory: localInventory });
+            } catch (e) {
+              console.warn('[InventoryStore] Fallo refrescando inventario local:', e);
             }
-          } catch (e) {
-            console.warn('[InventoryStore] Error parsing remote inventory update:', e);
           }
         });
       }

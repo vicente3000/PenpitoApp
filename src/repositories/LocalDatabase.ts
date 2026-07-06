@@ -7,7 +7,7 @@ import {
 } from '../utils/drinkConfig';
 
 const DB_NAME = 'penpito.db';
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const DEFAULT_SETTINGS_ID = 'default';
 
 type DbHandle = Awaited<ReturnType<typeof SQLite.openDatabaseAsync>>;
@@ -175,7 +175,9 @@ async function applySchema(db: DbHandle) {
       queued_at INTEGER,
       guest_name TEXT,
       group_id TEXT,
-      split_method TEXT
+      split_method TEXT,
+      order_index INTEGER,
+      ready_since INTEGER
     );
   `);
 }
@@ -186,6 +188,8 @@ async function ensureOrderColumns(db: DbHandle) {
     `ALTER TABLE orders ADD COLUMN guest_name TEXT`,
     `ALTER TABLE orders ADD COLUMN group_id TEXT`,
     `ALTER TABLE orders ADD COLUMN split_method TEXT`,
+    `ALTER TABLE orders ADD COLUMN order_index INTEGER`,
+    `ALTER TABLE orders ADD COLUMN ready_since INTEGER`,
   ];
 
   for (const statement of alterStatements) {

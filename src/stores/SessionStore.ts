@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { BillSplitMethod, SessionGuest, TableSession } from '../models';
 import { deviceService } from '../services/DeviceService';
+import { getDeviceId, getDeviceIdSync } from '../services/DeviceIdentityService';
 
 const SESSION_STORAGE_KEY = 'penpito.table.sessions';
 
@@ -9,9 +10,10 @@ interface SessionState {
   sessions: TableSession[];
   deviceGuestName: string | null;
   deviceTableNumber: number | null;
+  deviceId: string | null;
   loadSessions: () => Promise<void>;
   ensureTableSession: (tableNumber: number, qrValue: string) => TableSession;
-  joinTable: (tableNumber: number, qrValue: string, guestName: string) => SessionGuest;
+  joinTable: (tableNumber: number, qrValue: string, guestName: string) => Promise<SessionGuest>;
   setSplitMethod: (tableNumber: number, method: BillSplitMethod, hostGuestId?: string) => void;
   setHostGuest: (tableNumber: number, guestId?: string) => void;
   setTipPercentage: (tableNumber: number, tipPercentage: number) => void;
@@ -59,17 +61,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   deviceGuestName: null,
   deviceTableNumber: null,
+  deviceId: null,
   loadSessions: async () => {
     try {
       const raw = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
       const guestName = await AsyncStorage.getItem('penpito.device.guestName');
       const tableNumberRaw = await AsyncStorage.getItem('penpito.device.tableNumber');
+      const deviceId = await getDeviceId();
       
       const parsed = raw ? (JSON.parse(raw) as TableSession[]) : [];
       const sessions = Array.isArray(parsed) ? parsed : [];
       const deviceTableNumber = tableNumberRaw ? parseInt(tableNumberRaw, 10) : null;
       
-      set({ sessions, deviceGuestName: guestName, deviceTableNumber });
+      set({ sessions, deviceGuestName: guestName, deviceTableNumber, deviceId });
     } catch {
       // Invalid persisted data is ignored
     }
@@ -86,24 +90,53 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sessions: [...state.sessions, nextSession],
     }));
     void persistSessions(nextSessions);
-    publishSessionUpdate(tableNumber, nextSessions);
     return nextSession;
   },
-  joinTable: (tableNumber, qrValue, guestName) => {
+  joinTable: async (tableNumber, qrValue, guestName) => {
     const cleanName = guestName.trim();
+    const deviceId = get().deviceId ?? (await getDeviceId());
     const currentSession = get().ensureTableSession(tableNumber, qrValue);
-    const existingGuest = currentSession.guests.find(
+
+    const existingByDevice = currentSession.guests.find(
+      (guest) => guest.device_id === deviceId
+    );
+    if (existingByDevice) {
+      if (existingByDevice.name.trim().toLowerCase() !== cleanName.toLowerCase()) {
+        get().changeGuestName(tableNumber, existingByDevice.id, cleanName);
+      }
+      return get().sessions
+        .find((s) => s.table_number === tableNumber)
+        ?.guests.find((g) => g.id === existingByDevice.id) ?? existingByDevice;
+    }
+
+    const existingByName = currentSession.guests.find(
       (guest) => guest.name.trim().toLowerCase() === cleanName.toLowerCase()
     );
 
-    if (existingGuest) {
-      return existingGuest;
+    if (existingByName) {
+      if (!existingByName.device_id) {
+        const nextSessions = get().sessions.map((session) =>
+          session.table_number === tableNumber
+            ? {
+                ...session,
+                guests: session.guests.map((g) =>
+                  g.id === existingByName.id ? { ...g, device_id: deviceId } : g
+                ),
+              }
+            : session
+        );
+        set({ sessions: nextSessions });
+        void persistSessions(nextSessions);
+        publishSessionUpdate(tableNumber, nextSessions);
+      }
+      return existingByName;
     }
 
     const nextGuest: SessionGuest = {
       id: makeGuestId(tableNumber),
       name: cleanName,
       joined_at: Date.now(),
+      device_id: deviceId,
     };
 
     const nextSessions = get().sessions.map((session) =>
@@ -210,7 +243,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     publishSessionUpdate(tableNumber, nextSessions);
   },
   syncSessionFromNetwork: (tableNumber, nextSession) => {
-    // Si recibimos un objeto vacío, significa que se cerró la sesión de la mesa
     if (!nextSession || Object.keys(nextSession).length === 0) {
       const nextSessions = get().sessions.filter((s) => s.table_number !== tableNumber);
       set({ sessions: nextSessions });
@@ -218,14 +250,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
 
+    const deviceId = getDeviceIdSync();
+    const localSession = get().sessions.find((s) => s.table_number === tableNumber);
+
+    let mergedSession = nextSession;
+    if (deviceId && localSession) {
+      const localDeviceGuest = localSession.guests.find((g) => g.device_id === deviceId);
+      const networkHasDevice = nextSession.guests.some((g) => g.device_id === deviceId);
+      if (localDeviceGuest && !networkHasDevice) {
+        mergedSession = {
+          ...nextSession,
+          guests: [...nextSession.guests, localDeviceGuest],
+        };
+      }
+    }
+
     const hasSession = get().sessions.some((s) => s.table_number === tableNumber);
     let nextSessions: TableSession[];
     if (hasSession) {
       nextSessions = get().sessions.map((s) =>
-        s.table_number === tableNumber ? nextSession : s
+        s.table_number === tableNumber ? mergedSession : s
       );
     } else {
-      nextSessions = [...get().sessions, nextSession];
+      nextSessions = [...get().sessions, mergedSession];
     }
     set({ sessions: nextSessions });
     void persistSessions(nextSessions);
@@ -248,13 +295,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
   leaveCurrentTable: () => {
-    const { deviceGuestName: guestName, deviceTableNumber: tableNumber, sessions } = get();
+    const { deviceGuestName: guestName, deviceTableNumber: tableNumber, sessions, deviceId } = get();
     if (!guestName || tableNumber === null) return;
 
     const session = sessions.find((s) => s.table_number === tableNumber);
     if (!session) return;
 
-    const guest = session.guests.find(
+    const guestByDevice = deviceId
+      ? session.guests.find((g) => g.device_id === deviceId)
+      : undefined;
+    const guest = guestByDevice ?? session.guests.find(
       (g) => g.name.trim().toLowerCase() === guestName.trim().toLowerCase()
     );
     if (!guest) return;

@@ -1,0 +1,26 @@
+{
+  "name": "penpito-controller",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Order Controller autoritativo del broker MQTT Penpito (protocolo v2).",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts",
+    "test": "jest --config jest.config.cjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "mqtt": "^5.10.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.9.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "tsx": "^4.19.2",
+    "typescript": "~5.9.2"
+  }
+}

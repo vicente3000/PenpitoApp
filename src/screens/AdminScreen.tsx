@@ -27,8 +27,6 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Dialog, DialogAction } from '../components/ui/Dialog';
 import { PreparationTimeline } from '../components/PreparationTimeline';
-import { deviceService } from '../services/DeviceService';
-import { commandQueueService } from '../services/CommandQueueService';
 import { ConnectionSnapshot } from '../adapters/ICommunicationAdapter';
 
 export type Esp32DeviceKey = 'kraken';
@@ -51,6 +49,7 @@ export interface AdminScreenProps {
   settings: MachineSettings | null;
   onBack: () => void;
   onMarkServed: (orderId: string) => void;
+  onDeleteOrder?: (orderId: string) => void;
   onRefillBottle: (bottleId: string) => void;
   onSaveSettings: (overrideSpeed?: number, updatedCalibs?: number[], updatedPositions?: number[]) => void;
   orders: DrinkOrder[];
@@ -66,6 +65,12 @@ export interface AdminScreenProps {
   esp32Feedback: string;
   setEsp32ConfigValue: (deviceId: Esp32DeviceKey, field: keyof Esp32WifiConfig, value: string) => void;
   onSendEsp32Config: (deviceId: Esp32DeviceKey) => void;
+  onTestPumpCalib?: (pumpIdx: number) => Promise<boolean>;
+  onSendTestHw?: (payload: Record<string, unknown>) => Promise<unknown>;
+  onPowerOn?: () => Promise<boolean>;
+  onPowerOff?: () => Promise<boolean>;
+  onClean?: () => Promise<boolean>;
+  onEmergencyStop?: () => Promise<boolean>;
   pumpCalibrations: number[];
   setPumpCalibrations: React.Dispatch<React.SetStateAction<number[]>>;
   carriagePositions: number[];
@@ -85,6 +90,7 @@ export function AdminScreen({
   settings,
   onBack,
   onMarkServed,
+  onDeleteOrder,
   onRefillBottle,
   onSaveSettings,
   orders,
@@ -100,6 +106,12 @@ export function AdminScreen({
   esp32Feedback,
   setEsp32ConfigValue,
   onSendEsp32Config,
+  onTestPumpCalib,
+  onSendTestHw,
+  onPowerOn,
+  onPowerOff,
+  onClean,
+  onEmergencyStop,
   pumpCalibrations,
   setPumpCalibrations,
   carriagePositions,
@@ -182,39 +194,20 @@ export function AdminScreen({
   const handleTestPumpCalib = async (pumpIdx: number) => {
     const pumpNum = pumpIdx + 1;
     setLocalFeedback(`Preparando prueba para Bomba ${pumpNum}...`);
-    
-    // Automatically position the carriage at the pump's coordinates
-    const targetPos = getPumpPosition(pumpNum);
-    setLocalFeedback(`Posicionando carro en ${targetPos} pasos para Bomba ${pumpNum}...`);
-    
-    const moveSuccess = await commandQueueService.enqueue({
-      cmd: 'TEST_HW',
-      target: 'kraken',
-      type: 'motor_abs',
-      val: targetPos
-    } as any);
 
-    if (!moveSuccess) {
-      setLocalFeedback('Error al posicionar el carro. Operación de prueba cancelada.');
+    if (!onTestPumpCalib) {
+      setLocalFeedback('Función de prueba no disponible en este momento.');
       return;
     }
 
-    await sleep(2500);
-    setLocalFeedback(`Ejecutando Bomba ${pumpNum} por 10 segundos...`);
-    
-    const pumpSuccess = await commandQueueService.enqueue({
-      cmd: 'TEST_HW',
-      target: 'kraken',
-      type: 'pump',
-      pin: pumpNum,
-      duration: 10000
-    } as any);
+    setLocalFeedback(`Posicionando carro y probando Bomba ${pumpNum} por 10 segundos...`);
+    const ok = await onTestPumpCalib(pumpIdx);
 
-    if (pumpSuccess) {
+    if (ok) {
       setLocalFeedback(`Prueba de Bomba ${pumpNum} finalizada. Mide la cantidad en ml y usa la calculadora.`);
       setTestPumpNum(String(pumpNum));
     } else {
-      setLocalFeedback(`Error al activar la Bomba ${pumpNum}.`);
+      setLocalFeedback(`Error al probar la Bomba ${pumpNum}.`);
     }
   };
 
@@ -289,15 +282,14 @@ export function AdminScreen({
       // Automatically position the carriage before activating the pump
       const targetPos = getPumpPosition(pin);
       setLocalFeedback(`Posicionando carro en ${targetPos} pasos para Bomba ${pin}...`);
-      const moveSuccess = await commandQueueService.enqueue({
-        cmd: 'TEST_HW',
-        target: 'kraken',
-        type: 'motor_abs',
-        val: targetPos
-      } as any);
-
-      if (!moveSuccess) {
-        setLocalFeedback('Error al posicionar el carro. Operación cancelada.');
+      if (onSendTestHw) {
+        try {
+          await onSendTestHw({ type: 'motor_abs', val: targetPos });
+        } catch {
+          setLocalFeedback('Error al posicionar el carro. Operación cancelada.');
+          return;
+        }
+      } else {
         return;
       }
 
@@ -343,16 +335,16 @@ export function AdminScreen({
     }
 
     setLocalFeedback(`Enviando comando: ${payload.type}...`);
-    const success = await commandQueueService.enqueue({
-      cmd: 'TEST_HW',
-      val: payload.type,
-      target: 'kraken',
-      ...payload,
-    } as any);
-
-    setLocalFeedback(
-      success ? 'Comando enviado correctamente.' : 'Fallo al enviar comando.'
-    );
+    if (!onSendTestHw) {
+      setLocalFeedback('Función de prueba no disponible.');
+      return;
+    }
+    try {
+      await onSendTestHw(payload);
+      setLocalFeedback('Comando enviado correctamente.');
+    } catch {
+      setLocalFeedback('Fallo al enviar comando.');
+    }
     setTimeout(() => setLocalFeedback(''), 4000);
   };
 
@@ -417,13 +409,8 @@ export function AdminScreen({
     setLocalFeedback("Bajando cuchara para prueba...");
     const travelTime = Number(spoonTravelTimeMs);
     try {
-      await deviceService.sendCommand({
-        cmd: 'TEST_HW',
-        target: 'kraken',
-        type: 'servo_cont',
-        val: 100,
-        duration: travelTime
-      } as any);
+      if (!onSendTestHw) return;
+      await onSendTestHw({ type: 'servo_cont', val: 100, duration: travelTime });
       await sleep(travelTime + 100);
       setLocalFeedback("Cuchara abajo.");
     } catch (err) {
@@ -440,13 +427,8 @@ export function AdminScreen({
     setLocalFeedback("Subiendo cuchara para prueba...");
     const travelTime = Number(spoonTravelTimeMs);
     try {
-      await deviceService.sendCommand({
-        cmd: 'TEST_HW',
-        target: 'kraken',
-        type: 'servo_cont',
-        val: -100,
-        duration: travelTime
-      } as any);
+      if (!onSendTestHw) return;
+      await onSendTestHw({ type: 'servo_cont', val: -100, duration: travelTime });
       await sleep(travelTime + 100);
       setLocalFeedback("Cuchara arriba.");
     } catch (err) {
@@ -463,33 +445,16 @@ export function AdminScreen({
     setLocalFeedback("Probando oscilación de mezcla (Revolviendo)...");
     const stirTime = Number(spoonStirIntervalMs);
     try {
+      if (!onSendTestHw) return;
       for (let i = 0; i < 4; i++) {
-        await deviceService.sendCommand({
-          cmd: 'TEST_HW',
-          target: 'kraken',
-          type: 'servo_cont',
-          val: -100,
-          duration: stirTime
-        } as any);
+        await onSendTestHw({ type: 'servo_cont', val: -100, duration: stirTime });
         await sleep(stirTime + 50);
 
-        await deviceService.sendCommand({
-          cmd: 'TEST_HW',
-          target: 'kraken',
-          type: 'servo_cont',
-          val: 100,
-          duration: stirTime
-        } as any);
+        await onSendTestHw({ type: 'servo_cont', val: 100, duration: stirTime });
         await sleep(stirTime + 50);
       }
       // Stop
-      await deviceService.sendCommand({
-        cmd: 'TEST_HW',
-        target: 'kraken',
-        type: 'servo_cont',
-        val: 0,
-        duration: 0
-      } as any);
+      await onSendTestHw({ type: 'servo_cont', val: 0, duration: 0 });
       setLocalFeedback("Prueba de oscilación completada.");
     } catch (err) {
       setLocalFeedback("Error durante la oscilación.");
@@ -506,59 +471,30 @@ export function AdminScreen({
     const travelTime = Number(spoonTravelTimeMs);
     const stirTime = Number(spoonStirIntervalMs);
     try {
+      if (!onSendTestHw) return;
       // 1. Bajar
       setLocalFeedback("1/3 Bajando cuchara...");
-      await deviceService.sendCommand({
-        cmd: 'TEST_HW',
-        target: 'kraken',
-        type: 'servo_cont',
-        val: 100,
-        duration: travelTime
-      } as any);
+      await onSendTestHw({ type: 'servo_cont', val: 100, duration: travelTime });
       await sleep(travelTime + 100);
 
       // 2. Alternar rápido (oscilar)
       setLocalFeedback("2/3 Revolviendo (Alternando subir/bajar rápido)...");
       for (let i = 0; i < 4; i++) {
-        await deviceService.sendCommand({
-          cmd: 'TEST_HW',
-          target: 'kraken',
-          type: 'servo_cont',
-          val: -100,
-          duration: stirTime
-        } as any);
+        await onSendTestHw({ type: 'servo_cont', val: -100, duration: stirTime });
         await sleep(stirTime + 50);
 
-        await deviceService.sendCommand({
-          cmd: 'TEST_HW',
-          target: 'kraken',
-          type: 'servo_cont',
-          val: 100,
-          duration: stirTime
-        } as any);
+        await onSendTestHw({ type: 'servo_cont', val: 100, duration: stirTime });
         await sleep(stirTime + 50);
       }
 
       // 3. Subir
       setLocalFeedback("3/3 Subiendo cuchara...");
-      await deviceService.sendCommand({
-        cmd: 'TEST_HW',
-        target: 'kraken',
-        type: 'servo_cont',
-        val: -100,
-        duration: travelTime
-      } as any);
+      await onSendTestHw({ type: 'servo_cont', val: -100, duration: travelTime });
       await sleep(travelTime + 100);
 
       // 4. Detener
-      await deviceService.sendCommand({
-        cmd: 'TEST_HW',
-        target: 'kraken',
-        type: 'servo_cont',
-        val: 0,
-        duration: 0
-      } as any);
-      
+      await onSendTestHw({ type: 'servo_cont', val: 0, duration: 0 });
+
       setLocalFeedback("Mezclado finalizado con éxito.");
     } catch (err) {
       setLocalFeedback("Error durante la prueba de mezcla.");
@@ -577,8 +513,12 @@ export function AdminScreen({
         {
           text: 'DETENER KRAKEN',
           variant: 'danger',
-          onPress: () => {
-            void commandQueueService.enqueue({ cmd: 'POWER', val: 'OFF', target: 'kraken' });
+          onPress: async () => {
+            try {
+              if (onEmergencyStop) await onEmergencyStop();
+            } catch {
+              // ignore
+            }
             setTimeout(() => {
               showCustomDialog(
                 'Detenido',
@@ -624,7 +564,12 @@ export function AdminScreen({
                 variant="primary"
                 size="sm"
                 onPress={async () => {
-                  const success = await commandQueueService.enqueue({ cmd: 'POWER', val: 'ON', target: 'kraken' });
+                  let success = false;
+                  try {
+                    if (onPowerOn) success = await onPowerOn();
+                  } catch {
+                    success = false;
+                  }
                   if (success) {
                     showCustomDialog(
                       'Maquina Encendida',

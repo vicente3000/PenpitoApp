@@ -14,6 +14,7 @@ import { deviceService } from '../services/DeviceService';
 import { useInventoryStore } from './InventoryStore';
 import { useRecipeStore } from './RecipeStore';
 import { useSessionStore } from './SessionStore';
+import { parseDrinkOrderArray } from '../adapters/payloadParsers';
 
 const TAG = '[OrderStore]';
 
@@ -53,11 +54,20 @@ function publishOrdersUpdate(tableNumber: number, orders: DrinkOrder[]) {
 }
 
 function sortOrders(orders: DrinkOrder[]) {
-  return [...orders].sort((a, b) => b.requested_at - a.requested_at);
+  return [...orders].sort((a, b) => {
+    const aTime = a.queued_at ?? a.requested_at;
+    const bTime = b.queued_at ?? b.requested_at;
+    if (aTime !== bTime) return aTime - bTime;
+    return (a.order_index ?? 0) - (b.order_index ?? 0);
+  });
 }
 
-let triggerInProgress = false;
-let hasProcessedRecovery = false;
+let triggerMutex: Promise<void> = Promise.resolve();
+let isTriggering = false;
+const processedRecoveryRecipes = new Set<string>();
+
+const READY_TIMEOUT_MS = 300_000;
+const STALE_ORDER_WITHOUT_SESSION_MS = 300_000;
 
 function upsertOrder(orders: DrinkOrder[], nextOrder: DrinkOrder) {
   return sortOrders([...orders.filter((order) => order.id !== nextOrder.id), nextOrder]);
@@ -71,6 +81,8 @@ function hasOrderChanged(current: DrinkOrder, next: DrinkOrder) {
     current.started_at !== next.started_at ||
     current.finished_at !== next.finished_at ||
     current.served_at !== next.served_at ||
+    current.ready_since !== next.ready_since ||
+    current.order_index !== next.order_index ||
     JSON.stringify(current.completed_step_ids) !== JSON.stringify(next.completed_step_ids) ||
     JSON.stringify(current.skipped_step_ids) !== JSON.stringify(next.skipped_step_ids)
   );
@@ -118,7 +130,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const orders = await orderRepository.getAllOrders();
-      const activeOrder = orders.find((order) => order.status === 'preparing') ?? null;
+      const activeOrder = orders.find((order) => order.status === 'preparing' || order.status === 'ready') ?? null;
       set({
         orders,
         activeOrderId: activeOrder?.id ?? null,
@@ -131,20 +143,20 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   createOrderBatch: async ({ items, table_number, qr_value, split_method, group_id }) => {
     const createdOrders: DrinkOrder[] = [];
     const batchId = group_id ?? `group-${table_number}-${Date.now()}`;
+    const batchTimestamp = Date.now();
     let buildIndex = 0;
 
     for (const item of items) {
       const quantity = Math.max(1, item.quantity ?? 1);
 
       for (let quantityIndex = 0; quantityIndex < quantity; quantityIndex += 1) {
-        const now = Date.now() + buildIndex;
         const nextOrder: DrinkOrder = {
           id: buildOrderId(item.recipe.id, buildIndex),
           recipe_id: item.recipe.id,
           recipe_name: item.recipe.name,
           table_number,
           qr_value,
-          requested_at: now,
+          requested_at: batchTimestamp,
           status: 'queued',
           ice_count: item.options?.iceCount ?? 0,
           alcohol_oz: item.options?.alcoholOz,
@@ -155,13 +167,14 @@ export const useOrderStore = create<OrderState>((set, get) => ({
           completed_step_ids: [],
           skipped_step_ids: getSkippedSteps(item.recipe.id, item.options?.iceCount ?? 0),
           is_drink_ready: false,
-          queued_at: now,
+          queued_at: batchTimestamp,
           started_at: undefined,
           finished_at: undefined,
           served_at: undefined,
           guest_name: item.guest_name,
           group_id: batchId,
           split_method,
+          order_index: buildIndex,
         };
 
         await orderRepository.saveOrder(nextOrder);
@@ -179,10 +192,15 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     return createdOrders;
   },
   triggerNextQueuedOrder: async () => {
-    if (triggerInProgress) {
-      return false;
-    }
-    triggerInProgress = true;
+    let release: () => void;
+    const nextPromise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const previousPromise = triggerMutex;
+    triggerMutex = previousPromise.then(() => nextPromise);
+
+    await previousPromise;
+    isTriggering = true;
 
     try {
       let didTrigger = false;
@@ -195,13 +213,23 @@ export const useOrderStore = create<OrderState>((set, get) => ({
           break;
         }
 
-        if (state.orders.some((order) => order.status === 'preparing' || order.status === 'ready')) {
+        const hasActivePrep = state.orders.some(
+          (order) =>
+            order.status === 'preparing' ||
+            (order.status === 'ready' && !order.served_at)
+        );
+        if (hasActivePrep) {
           break;
         }
 
         const queuedOrders = state.orders
           .filter((order) => order.status === 'queued')
-          .sort((a, b) => (a.queued_at ?? a.requested_at) - (b.queued_at ?? b.requested_at));
+          .sort((a, b) => {
+            const aTime = a.queued_at ?? a.requested_at;
+            const bTime = b.queued_at ?? b.requested_at;
+            if (aTime !== bTime) return aTime - bTime;
+            return (a.order_index ?? 0) - (b.order_index ?? 0);
+          });
 
         const groupMinTime = new Map<string, number>();
         for (const o of queuedOrders) {
@@ -216,7 +244,10 @@ export const useOrderStore = create<OrderState>((set, get) => ({
           const ga = groupMinTime.get(a.group_id ?? '') ?? 0;
           const gb = groupMinTime.get(b.group_id ?? '') ?? 0;
           if (ga !== gb) return ga - gb;
-          return (a.queued_at ?? a.requested_at) - (b.queued_at ?? b.requested_at);
+          const aTime = a.queued_at ?? a.requested_at;
+          const bTime = b.queued_at ?? b.requested_at;
+          if (aTime !== bTime) return aTime - bTime;
+          return (a.order_index ?? 0) - (b.order_index ?? 0);
         })[0];
 
         if (!nextQueued) {
@@ -228,14 +259,18 @@ export const useOrderStore = create<OrderState>((set, get) => ({
         const hasActiveSession = tableSession && tableSession.guests && tableSession.guests.length > 0;
 
         if (!hasActiveSession) {
-          console.log(`${TAG} Deleting stale queued order ${nextQueued.id} for table ${nextQueued.table_number} because there is no active session`);
-          await orderRepository.deleteOrder(nextQueued.id);
-          set((prevState) => ({
-            orders: prevState.orders.filter((o) => o.id !== nextQueued.id),
-          }));
-          publishOrdersUpdate(nextQueued.table_number, get().orders);
-
-          continue;
+          const orderAge = Date.now() - (nextQueued.queued_at ?? nextQueued.requested_at);
+          if (orderAge > STALE_ORDER_WITHOUT_SESSION_MS) {
+            console.warn(`${TAG} Deleting stale queued order ${nextQueued.id} for table ${nextQueued.table_number} — no active session after ${Math.round(orderAge / 1000)}s`);
+            await orderRepository.deleteOrder(nextQueued.id);
+            set((prevState) => ({
+              orders: prevState.orders.filter((o) => o.id !== nextQueued.id),
+            }));
+            publishOrdersUpdate(nextQueued.table_number, get().orders);
+            continue;
+          }
+          console.log(`${TAG} Order ${nextQueued.id} waiting for session on table ${nextQueued.table_number}. Deferring.`);
+          break;
         }
 
         const recipe = useRecipeStore.getState().recipes.find((r) => r.id === nextQueued.recipe_id);
@@ -252,6 +287,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
             ...nextQueued,
             status: 'failed',
             finished_at: Date.now(),
+            ready_since: undefined,
           };
           await orderRepository.saveOrder(failedOrder);
           set((prevState) => ({
@@ -261,13 +297,26 @@ export const useOrderStore = create<OrderState>((set, get) => ({
           continue;
         }
 
-        const startedOrder = await startPreparation(nextQueued);
-        if (!startedOrder) {
+        const stillBusy = get().orders.some(
+          (order) =>
+            order.status === 'preparing' ||
+            (order.status === 'ready' && !order.served_at)
+        );
+        if (stillBusy) {
+          console.log(`${TAG} Aborting preparation of order ${nextQueued.id} because another order is currently preparing or ready.`);
           break;
         }
 
         if (recipe) {
           await useInventoryStore.getState().consumeForRecipe(recipe, orderOptions);
+        }
+
+        const startedOrder = await startPreparation(nextQueued);
+        if (!startedOrder) {
+          if (recipe) {
+            await useInventoryStore.getState().restoreForRecipe(recipe, orderOptions);
+          }
+          break;
         }
 
         await orderRepository.saveOrder(startedOrder);
@@ -276,49 +325,139 @@ export const useOrderStore = create<OrderState>((set, get) => ({
           activeOrderId: startedOrder.id,
         }));
         publishOrdersUpdate(nextQueued.table_number, get().orders);
+
         didTrigger = true;
       }
 
       return didTrigger;
     } finally {
-      triggerInProgress = false;
+      isTriggering = false;
+      release!();
     }
   },
   syncFromMachine: async (machineState) => {
     const state = get();
     const activeOrderId =
-      state.activeOrderId ?? state.orders.find((order) => order.status === 'preparing')?.id ?? null;
+      state.activeOrderId ??
+      state.orders.find((order) => order.status === 'preparing' || order.status === 'ready')?.id ??
+      null;
+
+    const orphanedPreparing = state.orders.filter(
+      (o) => o.status === 'preparing' && o.id !== activeOrderId
+    );
+    if (orphanedPreparing.length > 0) {
+      console.warn(`${TAG} Found ${orphanedPreparing.length} orphaned preparing orders. Resetting them to queued.`);
+      let updatedOrders = [...state.orders];
+      for (const orphan of orphanedPreparing) {
+        const resetOrder: DrinkOrder = {
+          ...orphan,
+          status: 'queued',
+          active_step_id: undefined,
+          started_at: undefined,
+        };
+        await orderRepository.saveOrder(resetOrder);
+        updatedOrders = upsertOrder(updatedOrders, resetOrder);
+        try {
+          const recipe = useRecipeStore.getState().recipes.find((r) => r.id === orphan.recipe_id);
+          if (recipe) {
+            await useInventoryStore.getState().restoreForRecipe(recipe, {
+              iceCount: orphan.ice_count,
+              alcoholOz: orphan.alcohol_oz,
+              mixerOz: orphan.mixer_oz,
+            });
+          }
+        } catch (e) {
+          console.warn('[OrderStore] Failed to restore ingredients for orphaned order', e);
+        }
+      }
+      set({ orders: updatedOrders });
+      if (orphanedPreparing.length > 0) {
+        const affectedTables = new Set(orphanedPreparing.map((o) => o.table_number));
+        for (const tableNum of affectedTables) {
+          publishOrdersUpdate(tableNum, get().orders);
+        }
+      }
+    }
+
+    if (machineState.isDrinkReady) {
+      const readyOrder = get().orders.find((o) => o.status === 'ready');
+      const preparingOrder = get().orders.find((o) => o.status === 'preparing');
+
+      if (!readyOrder && !preparingOrder) {
+        // Guard against a timing race: if there is a queued order that matches the
+        // machine's current recipe, it is likely the one we just sent and whose local
+        // status hasn't been updated to 'preparing' yet. Wait for the next sync cycle
+        // rather than sending a destructive TAKEN immediately.
+        const hasMatchingQueued =
+          machineState.currentRecipeId != null &&
+          get().orders.some(
+            (o) => o.status === 'queued' && o.recipe_id === machineState.currentRecipeId
+          );
+
+        if (hasMatchingQueued) {
+          console.warn(
+            `${TAG} Machine reports isDrinkReady but only queued (in-flight) orders exist for ${machineState.currentRecipeId}. Deferring TAKEN.`
+          );
+        } else {
+          console.warn(
+            `${TAG} Machine reports isDrinkReady but no ready or preparing order found locally. Sending TAKEN to clear machine state.`
+          );
+          await commandQueueService.enqueue({ cmd: 'TAKEN', val: '', target: 'kraken' });
+        }
+      } else if (readyOrder && readyOrder.ready_since && Date.now() - readyOrder.ready_since > READY_TIMEOUT_MS) {
+        console.warn(`${TAG} Order ${readyOrder.id} has been ready for more than ${READY_TIMEOUT_MS}ms. Auto-sending TAKEN to unblock queue.`);
+        await commandQueueService.enqueue({ cmd: 'TAKEN', val: '', target: 'kraken' });
+      }
+    }
 
     if (machineState.status === 'idle' && !machineState.isDrinkReady) {
-      hasProcessedRecovery = false;
+      processedRecoveryRecipes.clear();
     }
 
     if (!activeOrderId) {
       if (machineState.status === 'idle' && !machineState.isDrinkReady) {
-        await get().triggerNextQueuedOrder();
+        const hasPendingRecovery =
+          machineState.currentRecipeId != null &&
+          !processedRecoveryRecipes.has(machineState.currentRecipeId) &&
+          get().orders.some(
+            (o) => o.status === 'queued' && o.recipe_id === machineState.currentRecipeId
+          );
+        if (hasPendingRecovery) {
+          return;
+        }
+        const hasUnservedReadyOrder = get().orders.some((o) => o.status === 'ready' && !o.served_at);
+        if (!hasUnservedReadyOrder) {
+          await get().triggerNextQueuedOrder();
+        }
         return;
       }
 
-      if (triggerInProgress) {
+      if (isTriggering) {
         return;
       }
 
-      if (hasProcessedRecovery) {
+      if (machineState.currentRecipeId && processedRecoveryRecipes.has(machineState.currentRecipeId)) {
         return;
       }
 
-      const recoveryCandidate = [...state.orders]
+      const recoveryCandidate = [...get().orders]
         .filter((o) => o.status === 'queued' && o.recipe_id === machineState.currentRecipeId)
-        .sort((a, b) => (a.queued_at ?? a.requested_at) - (b.queued_at ?? b.requested_at))[0] ?? null;
+        .sort((a, b) => {
+          const aTime = a.queued_at ?? a.requested_at;
+          const bTime = b.queued_at ?? b.requested_at;
+          if (aTime !== bTime) return aTime - bTime;
+          return (a.order_index ?? 0) - (b.order_index ?? 0);
+        })[0] ?? null;
 
-      const recoveryOrder =
-        recoveryCandidate && recoveryCandidate.started_at ? recoveryCandidate : null;
+      const recoveryOrder = recoveryCandidate;
 
-      const existingPrepared = state.orders.some(
+      const existingPrepared = get().orders.some(
         (o) => o.recipe_id === machineState.currentRecipeId && (o.status === 'preparing' || o.status === 'ready')
       );
-      if (recoveryOrder && machineState.status === 'preparing' && !existingPrepared) {
-        hasProcessedRecovery = true;
+      if (recoveryOrder && (machineState.status === 'preparing' || machineState.isDrinkReady) && !existingPrepared) {
+        if (machineState.currentRecipeId) {
+          processedRecoveryRecipes.add(machineState.currentRecipeId);
+        }
         const recipe = useRecipeStore.getState().recipes.find((r) => r.id === recoveryOrder.recipe_id);
         const orderOptions: DrinkPreparationOptions = {
           iceCount: recoveryOrder.ice_count,
@@ -330,18 +469,41 @@ export const useOrderStore = create<OrderState>((set, get) => ({
           await useInventoryStore.getState().consumeForRecipe(recipe, orderOptions);
         }
 
-        const boundOrder: DrinkOrder = {
-          ...recoveryOrder,
-          status: 'preparing',
-          active_step_id: machineState.activeStepId ?? 'cup_dispenser',
-          started_at: Date.now(),
-        };
-        await orderRepository.saveOrder(boundOrder);
-        set((prevState) => ({
-          orders: upsertOrder(prevState.orders, boundOrder),
-          activeOrderId: boundOrder.id,
-        }));
-        publishOrdersUpdate(boundOrder.table_number, get().orders);
+        if (machineState.isDrinkReady) {
+          // Machine already finished — bind the order directly as 'ready' so the
+          // waiter can confirm delivery manually.
+          console.warn(`${TAG} Recovery: binding queued order ${recoveryOrder.id} directly as ready (isDrinkReady=true).`);
+          const boundOrder: DrinkOrder = {
+            ...recoveryOrder,
+            status: 'ready',
+            active_step_id: 'ready',
+            is_drink_ready: true,
+            started_at: Date.now(),
+            finished_at: Date.now(),
+            ready_since: Date.now(),
+            completed_step_ids: machineState.completedStepIds ?? [],
+            skipped_step_ids: machineState.skippedStepIds ?? recoveryOrder.skipped_step_ids,
+          };
+          await orderRepository.saveOrder(boundOrder);
+          set((prevState) => ({
+            orders: upsertOrder(prevState.orders, boundOrder),
+            activeOrderId: boundOrder.id,
+          }));
+          publishOrdersUpdate(boundOrder.table_number, get().orders);
+        } else {
+          const boundOrder: DrinkOrder = {
+            ...recoveryOrder,
+            status: 'preparing',
+            active_step_id: machineState.activeStepId ?? 'cup_dispenser',
+            started_at: Date.now(),
+          };
+          await orderRepository.saveOrder(boundOrder);
+          set((prevState) => ({
+            orders: upsertOrder(prevState.orders, boundOrder),
+            activeOrderId: boundOrder.id,
+          }));
+          publishOrdersUpdate(boundOrder.table_number, get().orders);
+        }
         return;
       }
 
@@ -352,9 +514,16 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       return;
     }
 
-    const currentOrder = state.orders.find((order) => order.id === activeOrderId);
+    const currentOrder = get().orders.find((order) => order.id === activeOrderId);
     if (!currentOrder) {
       set({ activeOrderId: null });
+      return;
+    }
+
+    if (currentOrder.status === 'served') {
+      if (machineState.status === 'idle' && !machineState.isDrinkReady) {
+        set({ activeOrderId: null });
+      }
       return;
     }
 
@@ -384,22 +553,34 @@ export const useOrderStore = create<OrderState>((set, get) => ({
         skipped_step_ids: machineState.skippedStepIds ?? currentOrder.skipped_step_ids,
         is_drink_ready: true,
         finished_at: currentOrder.finished_at ?? Date.now(),
+        ready_since: currentOrder.ready_since ?? Date.now(),
       };
     }
 
+    const preparingDuration = Date.now() - (currentOrder.started_at ?? Date.now());
+    const MIN_PREP_MS = 5000;
+
+    const { connectionSnapshot } = useAppStore.getState();
+    const isDeviceOnline = connectionSnapshot?.deviceOnline ?? false;
+    const isActualActiveOrder = state.activeOrderId === currentOrder.id;
+
     if (
+      isDeviceOnline &&
+      isActualActiveOrder &&
       machineState.status === 'idle' &&
       !machineState.isDrinkReady &&
       currentOrder.status === 'preparing' &&
-      !currentOrder.is_drink_ready
+      !currentOrder.is_drink_ready &&
+      preparingDuration > MIN_PREP_MS
     ) {
-      console.warn(`${TAG} Preparación interrumpida o fallida. Limpiando cola de comandos pendientes.`);
+      console.warn(`${TAG} Preparación interrumpida o fallida tras ${preparingDuration}ms. Limpiando cola de comandos pendientes.`);
       commandQueueService.clear();
       nextOrder = {
         ...currentOrder,
         status: 'failed',
         active_step_id: undefined,
         finished_at: currentOrder.finished_at ?? Date.now(),
+        ready_since: undefined,
       };
       
       // Restablecer los ingredientes al inventario porque la preparación falló
@@ -417,12 +598,18 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       }
     }
 
+    // Bug 5 fix: Completely disable auto-served on machine idle, ensuring that
+    // the waiter must explicitly mark the order as served in the app.
+
     if (!hasOrderChanged(currentOrder, nextOrder)) {
       if (machineState.status === 'idle' && !machineState.isDrinkReady) {
-        const keepActive = nextOrder.status === 'preparing' ? activeOrderId : null;
+        const keepActive = (nextOrder.status === 'preparing' || nextOrder.status === 'ready') ? activeOrderId : null;
         set({ activeOrderId: keepActive });
         if (!keepActive) {
-          await get().triggerNextQueuedOrder();
+          const hasUnservedReadyOrder = get().orders.some((o) => o.status === 'ready' && !o.served_at);
+          if (!hasUnservedReadyOrder) {
+            await get().triggerNextQueuedOrder();
+          }
         }
       }
       return;
@@ -431,11 +618,11 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     await orderRepository.saveOrder(nextOrder);
     set((prevState) => ({
       orders: upsertOrder(prevState.orders, nextOrder),
-      activeOrderId: nextOrder.status === 'preparing' ? nextOrder.id : null,
+      activeOrderId: (nextOrder.status === 'preparing' || nextOrder.status === 'ready') ? nextOrder.id : null,
     }));
     publishOrdersUpdate(nextOrder.table_number, get().orders);
 
-    if (machineState.status === 'idle' && !machineState.isDrinkReady && nextOrder.status !== 'preparing') {
+    if (machineState.status === 'idle' && !machineState.isDrinkReady && nextOrder.status !== 'preparing' && nextOrder.status !== 'ready') {
       await get().triggerNextQueuedOrder();
     }
   },
@@ -449,23 +636,27 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       ...order,
       status: 'served',
       served_at: Date.now(),
+      ready_since: undefined,
     };
 
     await orderRepository.saveOrder(nextOrder);
     set((state) => ({
       orders: upsertOrder(state.orders, nextOrder),
-      activeOrderId: state.activeOrderId === orderId ? null : state.activeOrderId,
     }));
     publishOrdersUpdate(order.table_number, get().orders);
 
-    const takConfirmed = await commandQueueService.enqueue({
-      cmd: 'TAKEN',
-      val: '',
-      target: 'kraken',
-    });
-    if (!takConfirmed) {
-      console.warn(`${TAG} TAKEN command not acknowledged by ESP32. The machine may still have isDrinkReady=true, blocking the next order.`);
+    const { machineState } = useAppStore.getState();
+    if (machineState.status !== 'preparing') {
+      await commandQueueService.enqueue({
+        cmd: 'TAKEN',
+        val: '',
+        target: 'kraken',
+      });
+    } else {
+      console.log(`${TAG} markOrderServed: skipping TAKEN because machine is already preparing next order.`);
     }
+
+    await get().triggerNextQueuedOrder();
   },
   deleteOrder: async (orderId) => {
     const order = get().orders.find((entry) => entry.id === orderId);
@@ -521,15 +712,18 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     publishOrdersUpdate(tableNumber, []);
   },
   syncOrdersFromNetwork: async (tableNumber, nextOrders) => {
+    // Re-validacion defensiva por si se invoca directamente sin pasar por el parser del hook.
+    const safeOrders = parseDrinkOrderArray(nextOrders as unknown, tableNumber);
+
     const currentTableOrders = get().orders.filter((o) => o.table_number === tableNumber);
-    const nextIds = new Set(nextOrders.map((o) => o.id));
+    const nextIds = new Set(safeOrders.map((o) => o.id));
     for (const old of currentTableOrders) {
       if (!nextIds.has(old.id)) {
         await orderRepository.deleteOrder(old.id);
       }
     }
 
-    for (const order of nextOrders) {
+    for (const order of safeOrders) {
       const existing = currentTableOrders.find((o) => o.id === order.id);
       if (existing && !hasOrderChanged(existing, order)) {
         continue;
@@ -540,13 +734,20 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       await orderRepository.saveOrder(order);
     }
 
-    if (nextOrders.length === 0) {
-      await orderRepository.deleteOrdersForTable(tableNumber);
+    if (safeOrders.length === 0) {
+      const hasActiveOrders = currentTableOrders.some(
+        (o) => o.status === 'preparing' || o.status === 'ready' || o.status === 'queued'
+      );
+      if (!hasActiveOrders) {
+        await orderRepository.deleteOrdersForTable(tableNumber);
+      } else {
+        console.warn(`${TAG} Received empty orders for table ${tableNumber} but local has active orders. Ignoring destructive wipe.`);
+      }
     }
 
     const localOthers = get().orders.filter((o) => o.table_number !== tableNumber);
     const localTable = get().orders.filter((o) => o.table_number === tableNumber);
-    const mergedTable = nextOrders.map((netOrder) => {
+    const mergedTable = safeOrders.map((netOrder) => {
       const local = localTable.find((o) => o.id === netOrder.id);
       if (local && (STATUS_PRIORITY[local.status] ?? -1) > (STATUS_PRIORITY[netOrder.status] ?? -1)) {
         return local;
@@ -554,7 +755,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       return netOrder;
     });
     const updatedList = sortOrders([...localOthers, ...mergedTable]);
-    const activeOrder = updatedList.find((order) => order.status === 'preparing') ?? null;
+    const activeOrder = updatedList.find((order) => order.status === 'preparing' || order.status === 'ready') ?? null;
 
     set({
       orders: updatedList,
